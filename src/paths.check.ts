@@ -5,7 +5,7 @@
  *
  *   node --experimental-strip-types src/paths.check.ts
  */
-import { normPath, shellQuote } from "./api.ts";
+import { normPath } from "./api.ts";
 
 declare const process: { exit(code: number): never };
 
@@ -33,21 +33,5 @@ if (normPath("/home/thuan/hutech") === normPath("/home/thuan/hutech-bill")) {
   bad++;
   console.error("SAI: hutech va hutech-bill khong duoc coi la mot");
 }
-// shellQuote: duong dan tha tu VS Code vao terminal phai an toan voi khoang trang.
-const q: [string, boolean, string][] = [
-  ["/home/thuan/du an/a.ts", false, "'/home/thuan/du an/a.ts'"],
-  ["/home/thuan/ok/a.ts", false, "/home/thuan/ok/a.ts"],
-  ["/tmp/it's.txt", false, "'/tmp/it'\\''s.txt'"],
-  [`C:${B}My Code${B}a.ts`, true, `"C:${B}My Code${B}a.ts"`],
-  [`C:${B}code${B}a.ts`, true, `"C:${B}code${B}a.ts"`],
-];
-for (const [input, win, want] of q) {
-  const got = shellQuote(input, win);
-  if (got !== want) {
-    bad++;
-    console.error("SAI shellQuote " + JSON.stringify(input) + " -> " + got + ", ky vong " + want);
-  }
-}
-
-console.log(bad === 0 ? "normPath + shellQuote: " + (cases.length + 1 + q.length) + " truong hop deu dung" : "normPath: " + bad + " loi");
+console.log(bad === 0 ? "normPath: " + (cases.length + 1) + " truong hop deu dung" : "normPath: " + bad + " loi");
 process.exit(bad === 0 ? 0 : 1);

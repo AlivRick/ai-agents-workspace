@@ -64,8 +64,6 @@ input { font: inherit; color: inherit; }
 .side.mini { width: 44px; }
 .side.mini .head { padding: 12px 0 8px; justify-content: center; }
 .side .head .chev { padding: 2px 5px; display: grid; place-items: center; }
-.pane.drop, .side.drop { outline: 2px dashed var(--accent); outline-offset: -2px; }
-
 .mini-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; align-items: center; gap: 4px; padding-bottom: 12px; }
 .mini-ws {
   width: 30px; height: 30px; flex: none; border-radius: var(--r); display: grid; place-items: center;

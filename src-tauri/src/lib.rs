@@ -200,38 +200,6 @@ fn add_workspaces(app: State<App>, paths: Vec<String>) -> Vec<store::Workspace> 
     app.store.lock().unwrap().workspaces.clone()
 }
 
-/// Phân loại đường dẫn được kéo-thả vào cửa sổ.
-///
-/// Cùng một file có hai cách gọi tên: VS Code trên Windows thả ra `C:\...`,
-/// còn shell trong pane có thể đang sống trong distro, nơi chỉ `/mnt/c/...`
-/// mở được. `shell_path` là tên mà pane đích thật sự resolve được.
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Dropped {
-    path: String,
-    is_dir: bool,
-    shell_path: String,
-}
-
-#[tauri::command]
-async fn dropped_paths(paths: Vec<String>, runtime: Option<String>) -> Vec<Dropped> {
-    // spawn_blocking: mỗi metadata() trên \\wsl.localhost là IO qua mạng nội
-    // bộ; chạy thẳng trên main thread là đóng băng cửa sổ đúng lúc thả chuột.
-    tauri::async_runtime::spawn_blocking(move || {
-        let to_wsl = runtime.as_deref().and_then(wsl::distro_of).is_some();
-        paths
-            .into_iter()
-            .map(|p| Dropped {
-                is_dir: std::path::Path::new(&p).is_dir(),
-                shell_path: if to_wsl { util::to_wsl_path(&p) } else { p.clone() },
-                path: p,
-            })
-            .collect()
-    })
-    .await
-    .unwrap_or_default()
-}
-
 #[tauri::command]
 fn remove_workspace(app: State<App>, id: String) -> Vec<store::Workspace> {
     app.store.lock().unwrap().remove(&id);
@@ -522,7 +490,6 @@ pub fn run() {
             list_workspaces,
             add_workspace,
             add_workspaces,
-            dropped_paths,
             remove_workspace,
             update_workspace,
             git_info,
