@@ -61,6 +61,18 @@ input { font: inherit; color: inherit; }
   display: flex; flex-direction: column; min-height: 0;
 }
 .side .head { padding: 12px 12px 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.side.mini { width: 44px; }
+.side.mini .head { padding: 12px 0 8px; justify-content: center; }
+.side .head .chev { padding: 2px 5px; display: grid; place-items: center; }
+.mini-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; align-items: center; gap: 4px; padding-bottom: 12px; }
+.mini-ws {
+  width: 30px; height: 30px; flex: none; border-radius: var(--r); display: grid; place-items: center;
+  font-size: 10px; font-weight: 600; letter-spacing: .02em; color: var(--faint);
+  background: var(--bg); border: 1px solid var(--line); cursor: pointer;
+}
+.mini-ws:hover { background: var(--hover); color: var(--dim); }
+.mini-ws.on { color: var(--accent); border-color: var(--accent); background: var(--raise); }
+.mini-ws.add { font-size: 15px; font-weight: 400; margin-bottom: 4px; }
 .side .head h2 { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); font-weight: 600; }
 .search {
   margin: 0 12px 8px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r);

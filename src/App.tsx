@@ -35,6 +35,7 @@ const STATUS: Record<Status, [string, string]> = {
   idle: ["", "sẵn sàng"], run: ["run", "đang chạy"], att: ["att", "chờ bạn duyệt"], done: ["done", "xong"],
 };
 const PIN = "M9 3h6l-1 6 4 3v2h-5v7l-1 1-1-1v-7H6v-2l4-3z";
+const CHEV = { open: "M15 6l-6 6 6 6", closed: "M9 6l6 6-6 6" };
 
 export default function App() {
   const [view, setView] = useState<View>("code");
@@ -45,6 +46,7 @@ export default function App() {
   const [git, setGit] = useState<Record<string, GitInfo>>({});
   const [wsId, setWsId] = useState<string | null>(null);
   const [wsQuery, setWsQuery] = useState("");
+  const [sideOpen, setSideOpen] = useState(() => localStorage.getItem("side") !== "0");
   const [importable, setImportable] = useState<string[] | null>(null);
   const [panes, setPanes] = useState<PaneInfo[]>([]);
   const [focus, setFocus] = useState<string | null>(null);
@@ -81,6 +83,10 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [importable]);
+
+  const toggleSide = useCallback(() => {
+    setSideOpen((o) => { localStorage.setItem("side", o ? "0" : "1"); return !o; });
+  }, []);
 
   const pickTheme = useCallback((id: string) => {
     setThemeId(id);
@@ -311,16 +317,40 @@ export default function App() {
           <span className="spacer" />
         </nav>
 
-        <aside className="side">
+        <aside className={"side" + (sideOpen ? "" : " mini")}>
           <div className="head">
-            <h2>Workspace</h2>
-            <button className="btn ghost" onClick={openImport} title="Nhập từ danh sách project của Claude Code">Nhập…</button>
-            <button className="btn ghost" onClick={addWorkspace} title="Chọn thư mục">+</button>
+            {sideOpen && (
+              <>
+                <h2>Workspace</h2>
+                <button className="btn ghost" onClick={openImport} title="Nhập từ danh sách project của Claude Code">Nhập…</button>
+                <button className="btn ghost" onClick={addWorkspace} title="Chọn thư mục">+</button>
+              </>
+            )}
+            <button className="btn ghost chev" onClick={toggleSide}
+                    title={sideOpen ? "Thu gọn danh sách workspace" : "Mở rộng danh sách workspace"}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d={sideOpen ? CHEV.open : CHEV.closed} />
+              </svg>
+            </button>
           </div>
-          {workspaces.length > 6 && (
+          {sideOpen && workspaces.length > 6 && (
             <input className="search" placeholder="Lọc…" value={wsQuery} onChange={(e) => setWsQuery(e.target.value)} />
           )}
-          <div className="list">
+          {/* Thu gọn: dải 44px vẫn dùng được — nút thêm workspace và chữ cái
+              đầu của từng workspace để đổi qua lại mà không cần bung ra. */}
+          {!sideOpen && (
+            <div className="mini-list">
+              <button className="mini-ws add" onClick={addWorkspace} title="Thêm workspace (chọn thư mục)">+</button>
+              {visibleWs.map((w) => (
+                <button key={w.id} className={"mini-ws" + (w.id === wsId ? " on" : "")}
+                        onClick={() => setWsId(w.id)} title={`${label(w)} — ${shortPath(w.path)}`}>
+                  {label(w).split(/[/\\]/).pop()!.slice(0, 2).toUpperCase()}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="list" style={{ display: sideOpen ? "block" : "none" }}>
             {workspaces.length === 0 && (
               <div className="ws-empty">
                 <p>Chưa có workspace nào.</p>
