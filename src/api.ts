@@ -42,6 +42,15 @@ export type MemoryInfo = {
   isIndex: boolean; bytes: number; updatedAtMs: number;
 };
 
+export type Dropped = { path: string; isDir: boolean; shellPath: string };
+
+/// Bọc đường dẫn để dán vào shell: chỉ trích dẫn khi thật sự cần, vì đường dẫn
+/// đã trích dẫn thì tab-completion của shell không nối tiếp được.
+export function shellQuote(p: string, windows: boolean): string {
+  if (/^[A-Za-z0-9_@%+=:,./~-]+$/.test(p)) return p;
+  return windows ? `"${p.replace(/"/g, '""')}"` : `'${p.replace(/'/g, "'\\''")}'`;
+}
+
 export type Runtime = { id: string; label: string; kind: string; distro: string; shell: string };
 
 export const api = {
@@ -53,6 +62,7 @@ export const api = {
   listWorkspaces: () => invoke<Workspace[]>("list_workspaces"),
   addWorkspace: (path: string) => invoke<Workspace[]>("add_workspace", { path }),
   addWorkspaces: (paths: string[]) => invoke<Workspace[]>("add_workspaces", { paths }),
+  droppedPaths: (paths: string[], runtime?: string) => invoke<Dropped[]>("dropped_paths", { paths, runtime }),
   claudeProjects: (runtime?: string) => invoke<string[]>("claude_projects", { runtime }),
   removeWorkspace: (id: string) => invoke<Workspace[]>("remove_workspace", { id }),
   updateWorkspace: (id: string, patch: { name?: string; favorite?: boolean }) =>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { open as pickFolder } from "@tauri-apps/plugin-dialog";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { Terminal } from "@xterm/xterm";
 import Pane, { BlockList, type Block } from "./Pane";
 import ImportSheet from "./ImportSheet";
@@ -8,7 +9,7 @@ import SettingsView from "./SettingsView";
 import UsageView from "./UsageView";
 import WorkspaceView from "./WorkspaceView";
 import { applyTheme, themeById } from "./themes";
-import { api, fmtTokens, fmtUsd, normPath, shortPath, type EngineStatus, type GitInfo, type Runtime, type Session, type Workspace } from "./api";
+import { api, fmtTokens, fmtUsd, normPath, shellQuote, shortPath, type EngineStatus, type GitInfo, type Runtime, type Session, type Workspace } from "./api";
 
 type View = "code" | "workspace" | "sessions" | "usage" | "settings";
 type Status = "idle" | "run" | "att" | "done";
@@ -48,6 +49,7 @@ export default function App() {
   const [wsQuery, setWsQuery] = useState("");
   const [sideOpen, setSideOpen] = useState(() => localStorage.getItem("side") !== "0");
   const [importable, setImportable] = useState<string[] | null>(null);
+  const [dropOn, setDropOn] = useState<string | null>(null);
   const [panes, setPanes] = useState<PaneInfo[]>([]);
   const [focus, setFocus] = useState<string | null>(null);
   const [showBlocks, setShowBlocks] = useState<string | null>(null);
@@ -201,6 +203,53 @@ export default function App() {
     return () => clearInterval(t);
   }, []);
 
+  // ------------------------------------------------------------ kéo & thả
+  // Kéo file/thư mục từ VS Code (hay Explorer) vào cửa sổ: thả lên một pane thì
+  // dán đường dẫn vào terminal đó — không tự Enter, y như terminal thường; thả
+  // ra ngoài thì thư mục được thêm làm workspace.
+  const targetAt = useCallback((pos: { x: number; y: number }) => {
+    // Toạ độ của Tauri là pixel vật lý, elementFromPoint nhận pixel CSS.
+    const r = window.devicePixelRatio || 1;
+    const el = document.elementFromPoint(pos.x / r, pos.y / r) as HTMLElement | null;
+    const pane = el?.closest?.(".pane") as HTMLElement | null;
+    return pane?.dataset.pane ?? (el?.closest?.(".side") ? "side" : null);
+  }, []);
+
+  const onDrop = useCallback(async (paths: string[], target: string | null) => {
+    if (!paths.length) return;
+    const pane = panes.find((p) => p.id === target)
+      ?? (target === "side" ? null : panes.find((p) => p.id === focus) ?? null);
+    const items = await api.droppedPaths(paths, pane?.runtime ?? runtime);
+    if (pane) {
+      const win = (runtimes.find((r) => r.id === pane.runtime)?.kind ?? "linux") === "windows";
+      void api.ptyWrite(pane.id, items.map((i) => shellQuote(i.shellPath, win)).join(" ") + " ");
+      setFocus(pane.id);
+      setView("code");
+      return;
+    }
+    const dirs = items.filter((i) => i.isDir).map((i) => i.path);
+    if (!dirs.length) return;
+    setWorkspaces(await api.addWorkspaces(dirs));
+    const info = await api.gitInfo(dirs);
+    setGit((g) => ({ ...g, ...Object.fromEntries(info.map((x) => [x.path, x])) }));
+  }, [panes, focus, runtime, runtimes]);
+
+  // Listener đăng ký một lần; nếu phụ thuộc onDrop thì mỗi hook tick lại gỡ và
+  // đăng ký lại webview event — ref giữ bản mới nhất mà không phải làm vậy.
+  const dropRef = useRef(onDrop);
+  dropRef.current = onDrop;
+  useEffect(() => {
+    const un = getCurrentWebview().onDragDropEvent((e) => {
+      if (e.payload.type === "over") setDropOn(targetAt(e.payload.position));
+      else if (e.payload.type === "drop") {
+        const t = targetAt(e.payload.position);
+        setDropOn(null);
+        void dropRef.current(e.payload.paths, t);
+      } else setDropOn(null);
+    });
+    return () => { void un.then((f) => f()); };
+  }, [targetAt]);
+
   // ----------------------------------------------------------------- panes
   const addPane = useCallback((dir: string, command?: string, rt = runtime) => {
     const id = `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
@@ -317,7 +366,7 @@ export default function App() {
           <span className="spacer" />
         </nav>
 
-        <aside className={"side" + (sideOpen ? "" : " mini")}>
+        <aside className={"side" + (sideOpen ? "" : " mini") + (dropOn === "side" ? " drop" : "")}>
           <div className="head">
             {sideOpen && (
               <>
@@ -430,7 +479,8 @@ export default function App() {
                   {panes.map((p) => {
                     const [cls, statusLabel] = STATUS[p.status];
                     return (
-                      <section key={p.id} className={"pane" + (focus === p.id ? " focus" : "")}
+                      <section key={p.id} data-pane={p.id}
+                               className={"pane" + (focus === p.id ? " focus" : "") + (dropOn === p.id ? " drop" : "")}
                                onMouseDown={() => setFocus(p.id)}>
                         <header className="ph">
                           <span className="nm">{shortPath(p.cwd).split(/[/\\]/).pop()}</span>
