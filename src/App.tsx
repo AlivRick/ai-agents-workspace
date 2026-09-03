@@ -54,6 +54,9 @@ export default function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [scanning, setScanning] = useState(false);
   const [today, setToday] = useState({ costUsd: 0, output: 0 });
+  // Mở lại app thì PTY cũ đã chết; thứ khôi phục được là *phiên Claude* trong
+  // pane đó — `claude --resume <id>`. Mặc định bật vì đó là lý do có tuỳ chọn.
+  const [restore, setRestore] = useState(() => localStorage.getItem("restore") !== "0");
   const [themeId, setThemeId] = useState(() => localStorage.getItem("theme") ?? "agentspace");
   // Guards the save-on-change effect: without it, the first render writes an
   // empty layout before load_layout has answered, and the restored panes are
@@ -88,6 +91,11 @@ export default function App() {
     setSideOpen((o) => { localStorage.setItem("side", o ? "0" : "1"); return !o; });
   }, []);
 
+  const pickRestore = useCallback((on: boolean) => {
+    setRestore(on);
+    localStorage.setItem("restore", on ? "1" : "0");
+  }, []);
+
   const pickTheme = useCallback((id: string) => {
     setThemeId(id);
     void api.setTheme(id);
@@ -104,10 +112,20 @@ export default function App() {
       setGit(Object.fromEntries(info.map((g) => [g.path, g])));
     }
   }, []);
+  // Runtime hiện tại, đọc được từ trong một promise đang bay. Bản quét trả về
+  // muộn của runtime cũ mà ghi đè thì danh sách phiên rỗng lại — đúng triệu
+  // chứng "mở app không thấy phiên, bấm Quét lại mới có".
+  const rtRef = useRef(runtime);
+  rtRef.current = runtime;
   const loadSessions = useCallback(async () => {
     setScanning(true);
-    try { setSessions(await api.scanSessions(runtime)); } finally { setScanning(false); }
-    api.usageReport("today", runtime).then((r) => setToday(r.total)).catch(() => {});
+    try {
+      const list = await api.scanSessions(runtime);
+      if (rtRef.current === runtime) setSessions(list);
+    } finally { setScanning(false); }
+    api.usageReport("today", runtime)
+      .then((r) => { if (rtRef.current === runtime) setToday(r.total); })
+      .catch(() => {});
   }, [runtime]);
 
   useEffect(() => {
@@ -127,43 +145,56 @@ export default function App() {
   // shell, and the transcript scan — hundreds of megabytes on a busy machine —
   // starts after the first frame instead of competing with it.
   useEffect(() => {
-    loadEngine();
     loadWorkspaces();
-    const t = setTimeout(loadSessions, 250);
     api.getTheme().then((t) => { if (t) setThemeId(t); }).catch(() => {});
     api
       .loadLayout()
-      .then((l) => {
-        if (l?.panes?.length)
-          setPanes(l.panes.map((p: any) => ({ runtime: "host", ...p, status: "idle", blocks: [] })));
+      .then(async (l) => {
+        if (l?.panes?.length) {
+          const list: PaneInfo[] = l.panes.map((p: any) => ({ runtime: "host", ...p, status: "idle", blocks: [] }));
+          // Xếp lệnh resume vào hàng đợi *trước* khi pane tồn tại, nên onReady
+          // của terminal chắc chắn thấy nó — giải xong sau đó thì đã lỡ.
+          if (localStorage.getItem("restore") !== "0")
+            await Promise.all(
+              list.map(async (p) => {
+                if (!p.sessionId) return;
+                queued.current[p.id] = await api.claudeCommand(`--resume ${p.sessionId}`, p.runtime);
+              }),
+            );
+          setPanes(list);
+        }
         if (l?.wsId) setWsId(l.wsId);
       })
       .finally(() => setLayoutLoaded(true));
-    return () => clearTimeout(t);
     // Deliberately once: a runtime change re-runs the pieces that depend on it
     // through their own effects below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Switching runtime changes which machine's Claude Code we are reading.
-  const firstRun = useRef(true);
+  // Máy nào đang được đọc thì quét máy đó — chạy cả lần đầu, nên không cần
+  // hẹn giờ riêng lúc mount nữa (bản hẹn giờ đó giữ `runtime` cũ trong closure
+  // và quét nhầm host). Vẫn lùi sau khung hình đầu: transcript có thể vài trăm
+  // MB, quét ngay lúc mở làm cửa sổ đứng.
   useEffect(() => {
-    if (firstRun.current) { firstRun.current = false; return; }
     loadEngine();
-    loadSessions();
+    const t = setTimeout(loadSessions, 250);
+    return () => clearTimeout(t);
   }, [runtime, loadEngine, loadSessions]);
 
   // `panes` gets a new identity on every hook tick (a status changed), so
   // depending on it wrote state.json to disk twice a second. Save only when the
   // part that is actually persisted changes.
   const layoutKey = useMemo(
-    () => JSON.stringify({ wsId, panes: panes.map((p) => [p.id, p.cwd, p.runtime]) }),
+    () => JSON.stringify({ wsId, panes: panes.map((p) => [p.id, p.cwd, p.runtime, p.sessionId ?? ""]) }),
     [wsId, panes],
   );
   useEffect(() => {
     if (!layoutLoaded) return;
     const l = JSON.parse(layoutKey);
-    api.saveLayout({ wsId: l.wsId, panes: l.panes.map(([id, cwd, runtime]: string[]) => ({ id, cwd, runtime })) });
+    api.saveLayout({
+      wsId: l.wsId,
+      panes: l.panes.map(([id, cwd, runtime, sessionId]: string[]) => ({ id, cwd, runtime, sessionId: sessionId || undefined })),
+    });
   }, [layoutLoaded, layoutKey]);
 
   // Whatever added the workspace — folder picker, import sheet, a removal that
@@ -483,7 +514,9 @@ export default function App() {
                           onRename={renameSession} />
           )}
           {view === "usage" && <UsageView runtime={runtime} />}
-          {view === "settings" && <SettingsView current={theme.id} onPick={pickTheme} />}
+          {view === "settings" && (
+            <SettingsView current={theme.id} onPick={pickTheme} restore={restore} onRestore={pickRestore} />
+          )}
         </main>
       </div>
 

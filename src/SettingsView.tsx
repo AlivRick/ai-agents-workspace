@@ -2,7 +2,12 @@ import { THEMES, type Theme } from "./themes";
 
 /** Grouped theme picker. Each row previews the palette it applies, so the
  *  choice is made by looking rather than by reading names. */
-export default function SettingsView({ current, onPick }: { current: string; onPick: (id: string) => void }) {
+export default function SettingsView({
+  current, onPick, restore, onRestore,
+}: {
+  current: string; onPick: (id: string) => void;
+  restore: boolean; onRestore: (on: boolean) => void;
+}) {
   const groups = [...new Set(THEMES.map((t) => t.group))];
   return (
     <>
@@ -12,6 +17,21 @@ export default function SettingsView({ current, onPick }: { current: string; onP
       </div>
       <div className="scroll">
         <div className="usage">
+          <div className="card">
+            <h3>Phiên làm việc</h3>
+            <div className="sub">áp dụng cho lần mở app kế tiếp</div>
+            <label className="opt">
+              <input type="checkbox" checked={restore} onChange={(e) => onRestore(e.target.checked)} />
+              <span>
+                <b>Khôi phục phiên Claude khi mở lại</b>
+                <i>
+                  Mỗi pane nhớ phiên Claude đang chạy và tự <code>claude --resume</code> khi mở app.
+                  Tiến trình cũ không sống sót qua lần đóng app — cái khôi phục được là phiên trò chuyện,
+                  không phải nội dung terminal.
+                </i>
+              </span>
+            </label>
+          </div>
           {groups.map((g) => (
             <div className="card" key={g}>
               <h3>Giao diện · {g}</h3>
