@@ -381,3 +381,8 @@ table.plain td.mono { font-family: var(--mono); }
 .opt b { display: block; font-weight: 600; color: var(--fg); }
 .opt i { display: block; font-style: normal; color: var(--faint); margin-top: 3px; max-width: 62ch; }
 .opt code { background: var(--raise); border-radius: 4px; padding: 0 4px; }
+
+.pane .ph { cursor: grab; }
+.pane .ph:active { cursor: grabbing; }
+.pane .ph .btn, .pane .ph .chip { cursor: default; }
+.pane.over { outline: 2px solid var(--accent); outline-offset: -2px; }

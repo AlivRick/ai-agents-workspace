@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "tauri": "tauri",
-    "check:paths": "node --experimental-strip-types src/paths.check.ts"
+    "check:paths": "node --experimental-strip-types src/paths.check.ts",
+    "check:reorder": "node --experimental-strip-types src/reorder.check.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

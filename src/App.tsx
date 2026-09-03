@@ -8,6 +8,7 @@ import SettingsView from "./SettingsView";
 import UsageView from "./UsageView";
 import WorkspaceView from "./WorkspaceView";
 import { applyTheme, themeById } from "./themes";
+import { reorder } from "./reorder";
 import { api, fmtTokens, fmtUsd, normPath, shortPath, type EngineStatus, type GitInfo, type Runtime, type Session, type Workspace } from "./api";
 
 type View = "code" | "workspace" | "sessions" | "usage" | "settings";
@@ -49,6 +50,8 @@ export default function App() {
   const [sideOpen, setSideOpen] = useState(() => localStorage.getItem("side") !== "0");
   const [importable, setImportable] = useState<string[] | null>(null);
   const [panes, setPanes] = useState<PaneInfo[]>([]);
+  const dragPane = useRef<string | null>(null);
+  const [overPane, setOverPane] = useState<string | null>(null);
   const [focus, setFocus] = useState<string | null>(null);
   const [showBlocks, setShowBlocks] = useState<string | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -267,6 +270,9 @@ export default function App() {
     delete terms.current[id];
   };
 
+  // Thứ tự pane = thứ tự mảng `panes`, nên nó tự vào layout đã lưu.
+  const movePane = (id: string, to: string | number) => setPanes((all) => reorder(all, id, to));
+
   const deleteSessions = useCallback(async (files: string[]) => {
     await api.deleteSessions(files, runtime);
     await loadSessions();
@@ -461,9 +467,22 @@ export default function App() {
                   {panes.map((p) => {
                     const [cls, statusLabel] = STATUS[p.status];
                     return (
-                      <section key={p.id} className={"pane" + (focus === p.id ? " focus" : "")}
+                      <section key={p.id}
+                               className={"pane" + (focus === p.id ? " focus" : "") + (overPane === p.id ? " over" : "")}
                                onMouseDown={() => setFocus(p.id)}>
-                        <header className="ph">
+                        <header className="ph" draggable
+                                onDragStart={(e) => { dragPane.current = p.id; e.dataTransfer.effectAllowed = "move"; }}
+                                onDragEnd={() => { dragPane.current = null; setOverPane(null); }}
+                                onDragOver={(e) => {
+                                  if (!dragPane.current || dragPane.current === p.id) return;
+                                  e.preventDefault(); setOverPane(p.id);
+                                }}
+                                onDragLeave={() => setOverPane((o) => (o === p.id ? null : o))}
+                                onDrop={(e) => {
+                                  e.preventDefault();
+                                  if (dragPane.current) movePane(dragPane.current, p.id);
+                                  dragPane.current = null; setOverPane(null);
+                                }}>
                           <span className="nm">{shortPath(p.cwd).split(/[/\\]/).pop()}</span>
                           {p.runtime !== "host" && (
                             <span className="chip" title={p.runtime}>
@@ -472,6 +491,14 @@ export default function App() {
                           )}
                           <span className={"chip " + cls}><span className="d" />{p.tool ?? p.message ?? statusLabel}</span>
                           <span className="sp" />
+                          {panes.length > 1 && (
+                            <>
+                              <button className="btn ghost" style={{ padding: "1px 6px" }} title="Chuyển lên trước"
+                                      disabled={panes[0].id === p.id} onClick={() => movePane(p.id, -1)}>‹</button>
+                              <button className="btn ghost" style={{ padding: "1px 6px" }} title="Chuyển ra sau"
+                                      disabled={panes[panes.length - 1].id === p.id} onClick={() => movePane(p.id, 1)}>›</button>
+                            </>
+                          )}
                           <button className="btn ghost" style={{ padding: "1px 6px" }}
                                   onClick={() => setShowBlocks(showBlocks === p.id ? null : p.id)}
                                   title="Lệnh đã chạy">⌘ {p.blocks.length}</button>
