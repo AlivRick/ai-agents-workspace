@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Agentspace main window",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open"]
+  "permissions": ["core:default", "dialog:allow-open", "notification:default", "core:window:allow-request-user-attention"]
 }

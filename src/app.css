@@ -386,3 +386,89 @@ table.plain td.mono { font-family: var(--mono); }
 .pane .ph:active { cursor: grabbing; }
 .pane .ph .btn, .pane .ph .chip { cursor: default; }
 .pane.over { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* ------------------------------------------------- cửa sổ quota 5 giờ */
+.blk-now { font-size: 12px; color: var(--faint); white-space: nowrap; }
+.blk-now b { font-family: var(--mono); font-size: 20px; font-weight: 600; color: var(--text); }
+.gauge { height: 10px; background: var(--line-soft); border-radius: 5px; overflow: hidden; margin: 4px 0 8px; }
+.gauge i { display: block; height: 100%; background: var(--accent); border-radius: 5px; transition: width .3s; }
+.gauge i.over { background: var(--warn); }
+.card .gauge + .sub { margin-bottom: 14px; }
+
+/* Hạn mức thật đọc từ `/usage`: mỗi dòng một cửa sổ (phiên 5 giờ, tuần). */
+.limits { display: flex; flex-direction: column; gap: 9px; margin: 10px 0 14px; }
+/* min-height khớp chiều cao một dòng chữ 12px, để khung chờ và hàng thật cao
+   bằng nhau — không thì thẻ nhảy một nấc lúc số thật về. */
+.lim { display: grid; grid-template-columns: 108px 1fr 40px auto; gap: 10px; align-items: center;
+       font-size: 12px; min-height: 18px; }
+.lim .k { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lim .gauge { display: block; margin: 0; }
+.lim .v { font-family: var(--mono); color: var(--text); text-align: right; }
+.lim .s { color: var(--faint); white-space: nowrap; }
+/* Khung chờ: cùng lưới, cùng chiều cao, nên thẻ không giật khi số thật về. */
+.limits.wait { animation: limpulse 1.3s ease-in-out infinite; }
+.lim.skel > span { height: 10px; border-radius: 5px; background: var(--line-soft); }
+.lim.skel .k { width: 84px; } .lim.skel .v { width: 32px; } .lim.skel .s { width: 132px; }
+@keyframes limpulse { 0%, 100% { opacity: .5; } 50% { opacity: .9; } }
+.chart.blk { height: 80px; }
+.chart.blk .bar i { background: var(--line); }
+.chart.blk .bar.on i { background: var(--accent); }
+
+/* Hàng nhãn–giá trị cho mục chỉ đọc (MCP, plugin). */
+.facts { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.facts > div { display: grid; grid-template-columns: 150px 1fr; gap: 12px; align-items: baseline; }
+.facts dt { font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .05em; }
+.facts dd { font-size: 12px; font-family: var(--mono); color: var(--text); white-space: pre-wrap; word-break: break-all; }
+
+/* ------------------------------------------------------------- hộp thư */
+.inbox-btn {
+  background: none; border: 1px solid transparent; color: var(--faint); font: inherit; font-size: 11px;
+  padding: 1px 7px; border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 5px;
+}
+.inbox-btn:hover { background: var(--hover); color: var(--text); }
+.inbox-btn.att { color: var(--warn); border-color: var(--att-line); }
+.inbox-btn .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
+.inbox-scrim { position: fixed; inset: 0; z-index: 40; }
+.inbox {
+  position: fixed; right: 12px; bottom: 32px; z-index: 41; width: min(420px, calc(100vw - 24px));
+  max-height: 60vh; overflow-y: auto; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; box-shadow: 0 18px 48px rgba(0, 0, 0, .45); padding: 6px;
+}
+.inbox header { display: flex; align-items: center; gap: 8px; padding: 6px 8px; font-size: 11px; color: var(--faint); }
+.inbox header .sp { flex: 1; }
+.inbox .hint { padding: 14px 8px; font-size: 12px; }
+.inbox-row {
+  display: grid; grid-template-columns: auto auto 1fr auto; gap: 8px; align-items: center; width: 100%;
+  background: none; border: 0; color: inherit; font: inherit; text-align: left;
+  padding: 7px 8px; border-radius: 7px; cursor: pointer;
+}
+.inbox-row:hover { background: var(--hover); }
+.inbox-row .n { font-size: 12px; font-weight: 500; color: var(--text); }
+.inbox-row .msg { font-size: 11px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-row .t { font-size: 10px; color: var(--faint); font-family: var(--mono); }
+
+/* ------------------------------------------------- tìm trong pane (Ctrl+F) */
+.find {
+  display: flex; align-items: center; gap: 4px; padding: 4px 6px; flex: none;
+  border-bottom: 1px solid var(--line); background: var(--panel);
+}
+.find input {
+  flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+  color: var(--text); font: inherit; font-size: 12px; padding: 3px 8px; outline: none;
+}
+.find input:focus { border-color: var(--accent); }
+.find .btn { padding: 1px 7px; }
+
+/* Việc Claude tự lên kế hoạch, cùng khuôn với danh sách lệnh. */
+.blocks.todos .b { cursor: default; }
+.blocks.todos .b:hover { background: none; }
+
+/* Đoạn khớp khi tìm theo nội dung. */
+.row .p.hit { color: var(--dim); font-style: normal; }
+.row .p.hit + .p.hit { margin-top: 2px; }
+
+/* Đặt tên pane ngay trên header. */
+.pane .ph .rename {
+  background: var(--bg); border: 1px solid var(--accent); border-radius: 5px; color: var(--text);
+  font: inherit; font-size: 11px; padding: 0 5px; width: 120px; outline: none;
+}

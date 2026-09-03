@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal, type IMarker } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { SearchAddon } from "@xterm/addon-search";
 import { listen } from "@tauri-apps/api/event";
 import { api, shortPath } from "./api";
 import type { Palette } from "./themes";
@@ -30,7 +31,11 @@ export default function Pane({
   onReady: (term: Terminal) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
+  const termRef = useRef<Terminal | null>(null);
+  const search = useRef<SearchAddon | null>(null);
+  const findBox = useRef<HTMLInputElement>(null);
   const [dead, setDead] = useState(false);
+  const [find, setFind] = useState<string | null>(null);
 
   useEffect(() => {
     const term = new Terminal({
@@ -39,10 +44,25 @@ export default function Pane({
       scrollback: 12000, allowProposedApi: true, macOptionIsMeta: true,
     });
     const fit = new FitAddon();
+    const finder = new SearchAddon();
     term.loadAddon(fit);
+    term.loadAddon(finder);
     term.loadAddon(new WebLinksAddon());
     term.open(host.current!);
     fit.fit();
+    termRef.current = term;
+    search.current = finder;
+
+    // Ctrl+F belongs to the pane, not to the shell inside it: returning false
+    // keeps xterm from forwarding the keystroke to the PTY.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type === "keydown" && e.ctrlKey && !e.altKey && e.key.toLowerCase() === "f") {
+        setFind((f) => f ?? "");
+        queueMicrotask(() => findBox.current?.focus());
+        return false;
+      }
+      return true;
+    });
 
     // --- OSC 133 command blocks -------------------------------------------
     let seq = 0;
@@ -126,6 +146,8 @@ export default function Pane({
 
     return () => {
       disposed = true;
+      termRef.current = null;
+      search.current = null;
       cancelAnimationFrame(raf);
       ro.disconnect();
       unlisteners.forEach((f) => f());
@@ -136,9 +158,39 @@ export default function Pane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  const step = (back: boolean) => {
+    if (!find) return;
+    if (back) search.current?.findPrevious(find);
+    else search.current?.findNext(find);
+  };
+
+  const close = () => { setFind(null); termRef.current?.focus(); };
+
   return (
-    <div className={"term" + (dead ? " dead" : "")} ref={host} onMouseDown={onFocus}
-         style={{ opacity: dead ? 0.55 : 1 }} data-focused={focused} />
+    <>
+      {find !== null && (
+        <div className="find">
+          <input ref={findBox} value={find} placeholder="Tìm trong pane…" spellCheck={false}
+                 onChange={(e) => { setFind(e.target.value); search.current?.findNext(e.target.value); }}
+                 onKeyDown={(e) => {
+                   if (e.key === "Enter") step(e.shiftKey);
+                   if (e.key === "Escape") close();
+                 }} />
+          <button className="btn ghost" title="Kết quả trước (Shift+Enter)" onClick={() => step(true)}>↑</button>
+          <button className="btn ghost" title="Kết quả sau (Enter)" onClick={() => step(false)}>↓</button>
+          <button className="btn ghost" title="Đóng (Esc)" onClick={close}>×</button>
+        </div>
+      )}
+      {/* Copy on select, the way every terminal emulator behaves. Only on
+          mouse-up: doing it in onSelectionChange rewrites the clipboard on
+          every pixel of the drag. */}
+      <div className={"term" + (dead ? " dead" : "")} ref={host} onMouseDown={onFocus}
+           onMouseUp={() => {
+             const t = termRef.current;
+             if (t?.hasSelection()) void navigator.clipboard.writeText(t.getSelection()).catch(() => {});
+           }}
+           style={{ opacity: dead ? 0.55 : 1 }} data-focused={focused} />
+    </>
   );
 }
 

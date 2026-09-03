@@ -14,9 +14,15 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 portable-pty = "0.9"
+
+# Windows toasts need an activation callback, which the notification plugin
+# does not expose on desktop. See src/notify.rs.
+[target.'cfg(windows)'.dependencies]
+tauri-winrt-notification = "0.7"
 
 [profile.release]
 codegen-units = 1

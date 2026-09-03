@@ -94,6 +94,11 @@ pub fn file_exists(distro: &str, path: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// One login-shell command inside the distro, stdout as bytes.
+pub fn run(distro: &str, cmd: &str) -> Option<Vec<u8>> {
+    wsl(&["-d", distro, "--", "sh", "-lc", cmd])
+}
+
 /// `claude --version` as the distro sees it — a Windows install of the CLI says
 /// nothing about whether the Linux side has one.
 pub fn claude_version(distro: &str) -> Option<String> {

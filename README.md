@@ -30,8 +30,10 @@ subscription của bạn, trong PTY thật.
 | **Chuyển runtime (Windows ↔ WSL)** | Trên Windows, mỗi pane chọn được chạy shell ở đâu: **Windows** (PowerShell) hay **WSL · \<distro\>**. Chọn WSL thì app spawn `wsl.exe -d <distro> --cd <đường-dẫn-Linux>`, dịch đường dẫn Windows/UNC sang Linux, đưa `ZDOTDIR` và thư mục hook qua `WSLENV`, và dùng `claude` của distro. Workspace nằm trên ổ Linux thì app tự chọn WSL. |
 | **Command blocks** | Shell integration OSC 133 cho zsh/bash: mỗi lệnh thành một block có exit code, cwd, và vạch màu ở lề. Danh sách 50 lệnh gần nhất, bấm để nhảy tới. |
 | **Trạng thái agent** | Hook Claude Code (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Notification`, `Stop`, `SessionEnd`) báo về theo từng pane: đang chạy tool gì, pane nào đang chờ bạn duyệt. |
+| **Hộp thư** | Một danh sách gộp mọi pane đang **chờ bạn duyệt** hoặc vừa **xong**, bấm để nhảy thẳng tới pane đó. Kèm thông báo hệ thống + nháy thanh tác vụ, **chỉ khi cửa sổ Agentspace không được focus**. |
+| **Cửa sổ 5 giờ** | Đồng hồ quota: token đã dùng trong cửa sổ đang mở, còn bao lâu tới lúc đóng, tốc độ đốt token/phút và ước tính lúc hết cửa sổ — vẽ **so với cửa sổ nặng nhất của chính bạn**, không phải một trần số bịa ra. |
 | **Session** | Đọc thẳng từ `~/.claude/projects/**/*.jsonl` — tiêu đề AI, prompt cuối, model, chi phí, token, dòng code, thời lượng. Tìm kiếm, lọc theo workspace, **Tiếp tục** (`--resume`), **Fork** (`--fork-session`), **đổi tên**, và **xoá** một hoặc nhiều phiên (hai bước xác nhận). |
-| **Nội dung workspace** | Ba thứ quyết định cách Claude hành xử trong thư mục đó, xem và sửa ngay trong app: **CLAUDE.md** (cả 4 tầng: dự án, cá nhân, `.claude/`, toàn cục — tầng nào chưa có thì bấm để tạo), **Skills** (`.claude/skills/` của workspace + `~/.claude/skills/` toàn cục, đọc frontmatter ra tên/mô tả/allowed-tools), và **Memory** (`~/.claude/projects/<workspace>/memory/` — những gì Claude đã ghi nhớ về thói quen và ràng buộc của bạn). |
+| **Nội dung workspace** | Mọi thứ quyết định cách Claude hành xử trong thư mục đó, một chỗ: **CLAUDE.md** (cả 4 tầng: dự án, cá nhân, `.claude/`, toàn cục — tầng nào chưa có thì bấm để tạo), **Skills**, **Agents** (`.claude/agents/`), **Lệnh** gạch chéo (`.claude/commands/`, thư mục con thành `/nhóm:lệnh`), **MCP** (gộp từ `.mcp.json`, `settings.json`, `settings.local.json` và `.claude.json`), **Plugin** (đã cài + marketplace), **Memory**. Bốn nhóm markdown sửa được ngay trong app; MCP và plugin chỉ đọc. |
 | **Mức sử dụng** | Token và chi phí theo ngày / model / workspace, khoảng hôm nay–7–30 ngày–tất cả. |
 
 ## Vì sao 22 bộ màu mà không cần file theme riêng
@@ -117,6 +119,63 @@ chặt hơn nhưng lại **sai**: một skill symlink vào `~/.claude/skills` (m
 trỏ sang ổ Windows) bị đẩy ra ngoài root và bị từ chối. Traversal vẫn bị chặn; thứ được
 cho phép là symlink do chính người dùng đặt trong thư mục cấu hình của họ.
 
+## Vì sao đồng hồ quota vẽ theo *bạn*, không theo một trần số
+
+Không có API nào nói hạn mức của bạn là bao nhiêu. Một thanh "83% của 200k" sẽ là con số
+tự bịa. Nên vạch mức được vẽ so với **cửa sổ 5 giờ nặng nhất bạn từng có** — "gấp rưỡi lần
+nặng nhất từ trước tới nay" là một cảnh báo có thật.
+
+Cửa sổ mở tại đầu giờ của hoạt động đầu tiên sau khi cửa sổ trước đóng, và kéo 5 giờ — nên
+một khoảng nghỉ dài hơn 5 giờ tự khắc mở cửa sổ mới, đúng hình dạng hạn mức của Claude Code.
+
+Chỗ này không thể tính từ tổng của phiên: một phiên chạy từ sáng tới tối sẽ rơi trọn vào
+cửa sổ mà nó *bắt đầu*. Nên `parse_file` cộng token vào **từng giờ đồng hồ** theo timestamp
+của từng message (`Session::hours`), và cửa sổ là tổng các giờ trong đó. Có test khẳng định
+tổng theo giờ bằng đúng tổng của phiên — nếu hai con số này lệch nhau thì biểu đồ đang nói dối.
+
+Những giờ đó **nằm trong cache** nhưng bị gỡ (`slim`) trước khi danh sách phiên đi qua IPC:
+giao diện không đọc chúng, và trên máy vài trăm transcript chúng chiếm phần lớn payload.
+
+## Đô-la của một cửa sổ là ước tính
+
+Claude Code ghi tiền theo *phiên*, không theo message. Nên chi phí của một phiên được chia
+cho các giờ của nó theo tỷ lệ token ra. Token thì chính xác; con số đô-la trong thẻ cửa sổ
+5 giờ là ước tính, và tổng các phần vẫn bằng đúng tiền của phiên (có test).
+
+## Cấu hình MCP không bao giờ hiện giá trị
+
+Đây là chỗ chứa bí mật: chuỗi kết nối Postgres có mật khẩu trong `args`, session token
+Telegram trong `env`. Một dashboard vẽ nguyên chuỗi đó lên màn hình là kiểu rò rỉ mà không
+thứ gì khác trong app gây ra được — nhất là lúc chia sẻ màn hình.
+
+Nên giá trị không rời khỏi Rust: `env` chỉ còn **tên biến**, và phần `user:pass@` của mọi
+URL bị thay bằng `***@` ngay trong `ws::redact`. MCP và plugin **chỉ đọc** — sửa thì dùng
+`/mcp`, `/plugin` trong phiên Claude Code, đúng cơ chế của nó.
+
+## Thông báo chỉ bắn khi bạn không nhìn
+
+Pane đang chờ duyệt trong lúc bạn ở cửa sổ khác là thứ duy nhất app này biết mà terminal
+không nói được. Nhưng một toast đè lên cửa sổ bạn đang gõ là tiếng ồn — lúc đó chip trên
+pane và bộ đếm dưới chân đã đủ. Nên điều kiện là `!document.hasFocus()`, kèm
+`requestUserAttention` để nháy thanh tác vụ.
+
+## Hạn mức lấy từ `/usage`, không tự đoán
+
+Cửa sổ 5 giờ dựng lại từ transcript chỉ đoán được mốc mở/đóng và không biết trần thật của
+gói, nên thẻ hạn mức chạy thẳng `claude -p /usage` — cùng số mà `/usage` trong Claude Code
+hiển thị, do server trả về. Vẫn là binary và tài khoản của bạn; app không gọi API Anthropic.
+
+Hai cái bẫy đã xử lý:
+
+* Một print-run vẫn để lại transcript. Hỏi 5 phút một lần thì mỗi ngày đẻ ra hàng trăm
+  "phiên" giả ngay trong thống kê mà thẻ đang vẽ — nên probe chạy trong thư mục riêng
+  (`$TMPDIR/agentspace-usage-probe`) rồi xoá đúng thư mục transcript của nó.
+* Mốc reset in ra không có năm, và đúng đầu giờ thì bỏ luôn phút (`7am`, không phải
+  `7:00am`). `npm run check:limits` giữ cả hai trường hợp đó.
+
+Không đọc được `/usage` (chưa đăng nhập, CLI cũ) thì thẻ quay về ước lượng từ transcript và
+nói rõ trên giao diện là ước.
+
 ## Vì sao dashboard đọc token trước, không đọc đô-la trước
 
 Claude Code chỉ ghi bản ghi `cost-state` cho **một phần** phiên (trên máy này: 28/160).
@@ -159,7 +218,7 @@ Trên WSL2, nếu cửa sổ đen thì đặt `WEBKIT_DISABLE_COMPOSITING_MODE=1
 có phải cùng thư mục mà session (do Claude Code bên Linux ghi) đã lưu hay không. Sai chỗ này
 là tab "Workspace này" không liệt kê gì.
 
-`cargo test` gồm 7 test, trong đó hai test chạy shell thật qua PTY thật: một test dựng
+`cargo test` gồm 22 test, trong đó hai test chạy shell thật qua PTY thật: một test dựng
 `write_shell_files()` rồi mở zsh và bash tương tác để khẳng định `133;D;0` và `133;D;1`
 đúng exit code; một test khẳng định file hook phủ đủ vòng đời agent và ghi nguyên tử
 (`.part` rồi `mv`).
@@ -172,10 +231,12 @@ src-tauri/src/
   sessions.rs  quét transcript (cache theo mtime+size, có version), tổng hợp usage
   term.rs      PTY, shell integration OSC 133, hộp thư hook
   store.rs     workspace + layout (một file JSON), git branch/dirty
+  ws.rs        CLAUDE.md / skill / agent / lệnh / MCP / plugin / memory của workspace
   lib.rs       lệnh Tauri
 src/
   App.tsx      shell, lưới pane, máy trạng thái hook
   Pane.tsx     xterm.js + parser OSC 133 + decoration ở lề
+  WorkspaceView.tsx  bảy tab nội dung workspace
   SessionsView.tsx / UsageView.tsx
 ```
 

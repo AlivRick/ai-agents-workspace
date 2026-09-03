@@ -21,6 +21,8 @@ export type Session = {
   input: number; output: number; cacheRead: number; cacheCreate: number;
   linesAdded: number; linesRemoved: number; durationMs: number; models: ModelUsage[];
 };
+/** One transcript whose *body* matched a search. */
+export type Hit = { file: string; snippets: string[]; total: number };
 export type Bucket = {
   costUsd: number; costSessions: number; sessions: number; messages: number; input: number; output: number;
   cacheRead: number; cacheCreate: number; linesAdded: number; linesRemoved: number; durationMs: number;
@@ -30,12 +32,29 @@ export type UsageReport = { range: string; total: Bucket; byDay: Named[]; byWork
 export type HookEvent = {
   paneId?: string; hook_event_name?: string; session_id?: string; cwd?: string;
   tool_name?: string; message?: string; prompt?: string; source?: string;
+  /** Whatever the tool was called with. Only TodoWrite's `todos` is read. */
+  tool_input?: any;
 };
 
 export type Doc = { path: string; scope: string; note: string; exists: boolean; bytes: number; updatedAtMs: number };
 export type SkillInfo = {
-  name: string; description: string; allowedTools: string; path: string; dir: string;
+  name: string; description: string; allowedTools: string; meta: string; path: string; dir: string;
   scope: string; extraFiles: number; bytes: number; updatedAtMs: number;
+};
+export type McpServer = {
+  name: string; scope: string; transport: string; target: string;
+  args: string[]; envKeys: string[]; source: string;
+};
+export type PluginInfo = {
+  name: string; marketplace: string; description: string; scope: string; version: string;
+  installPath: string; parts: string[]; installedAtMs: number; updatedAtMs: number;
+};
+export type Marketplace = { name: string; source: string; path: string; updatedAtMs: number };
+export type PluginReport = { plugins: PluginInfo[]; marketplaces: Marketplace[] };
+/** One rolling five-hour quota window. */
+export type Block = {
+  startMs: number; endMs: number; input: number; output: number; cacheRead: number;
+  cacheCreate: number; messages: number; costUsd: number; active: boolean;
 };
 export type MemoryInfo = {
   name: string; description: string; kind: string; path: string;
@@ -61,12 +80,19 @@ export const api = {
   saveLayout: (layout: unknown) => invoke<void>("save_layout", { layout }),
   loadLayout: () => invoke<any>("load_layout"),
   scanSessions: (runtime?: string) => invoke<Session[]>("scan_sessions", { runtime }),
+  searchSessions: (query: string, runtime?: string) => invoke<Hit[]>("search_sessions", { query, runtime }),
   deleteSessions: (files: string[], runtime?: string) => invoke<number>("delete_sessions", { files, runtime }),
   renameSession: (file: string, title: string, runtime?: string) =>
     invoke<Session[]>("rename_session", { file, title, runtime }),
   claudeDocs: (workspace: string, runtime?: string) => invoke<Doc[]>("claude_docs", { workspace, runtime }),
   listSkills: (workspace: string, runtime?: string) => invoke<SkillInfo[]>("list_skills", { workspace, runtime }),
   listMemories: (workspace: string, runtime?: string) => invoke<MemoryInfo[]>("list_memories", { workspace, runtime }),
+  listAgents: (workspace: string, runtime?: string) => invoke<SkillInfo[]>("list_agents", { workspace, runtime }),
+  listCommands: (workspace: string, runtime?: string) => invoke<SkillInfo[]>("list_commands", { workspace, runtime }),
+  listMcp: (workspace: string, runtime?: string) => invoke<McpServer[]>("list_mcp", { workspace, runtime }),
+  listPlugins: (runtime?: string) => invoke<PluginReport>("list_plugins", { runtime }),
+  usageBlocks: (runtime?: string) => invoke<Block[]>("usage_blocks", { runtime }),
+  usageLimits: (runtime?: string) => invoke<string>("usage_limits", { runtime }),
   readDoc: (path: string, workspace: string, runtime?: string) => invoke<string>("read_doc", { path, workspace, runtime }),
   writeDoc: (path: string, workspace: string, content: string, runtime?: string) =>
     invoke<void>("write_doc", { path, workspace, content, runtime }),
@@ -82,6 +108,8 @@ export const api = {
   ptyResize: (id: string, cols: number, rows: number) => invoke<void>("pty_resize", { id, cols, rows }),
   ptyClose: (id: string) => invoke<void>("pty_close", { id }),
   hookEvents: () => invoke<HookEvent[]>("hook_events"),
+  /** False when the platform cannot show a clickable toast — fall back to the plugin. */
+  toast: (title: string, body: string, pane: string) => invoke<boolean>("toast", { title, body, pane }),
 };
 
 export const fmtUsd = (n: number) => (n >= 100 ? `$${n.toFixed(0)}` : n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(3)}`);
@@ -98,6 +126,24 @@ export const fmtDur = (msIn: number) => {
   const h = Math.floor(m / 60);
   return `${h}h${String(m % 60).padStart(2, "0")}`;
 };
+/** What a quota window has consumed. Cache reads count: they are billed
+ *  tokens, just cheap ones. */
+export const blockTokens = (b: Block) => b.input + b.output + b.cacheCreate + b.cacheRead;
+
+/** "2h13" — time left, or "hết hạn" once the window has closed. */
+export const until = (ms: number) => {
+  const d = ms - Date.now();
+  if (d <= 0) return "đã đóng";
+  const m = Math.floor(d / 60_000);
+  if (m < 60) return `${m} phút`;
+  // Mốc reset tuần cách vài ngày: "43h20" bắt người đọc tự chia.
+  if (m >= 1440) return `${Math.floor(m / 1440)} ngày ${Math.floor((m % 1440) / 60)}h`;
+  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}`;
+};
+
+export const clock = (ms: number) =>
+  new Date(ms).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
+
 export const ago = (ms: number) => {
   const d = Date.now() - ms;
   if (d < 60_000) return "vừa xong";
@@ -130,3 +176,5 @@ export function normPath(p: string): string {
   s = s.replace(/\/+$/, "");
   return s === "" ? "/" : s;
 }
+
+export { parseLimits, type Limit } from "./limits.ts";

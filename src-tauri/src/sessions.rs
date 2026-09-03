@@ -23,6 +23,28 @@ pub struct ModelUsage {
     pub cost_usd: f64,
 }
 
+/// Tokens attributed to one wall-clock hour.
+///
+/// A session's totals cannot answer "how much have I burned in the last five
+/// hours" — a session that ran from morning to evening would land entirely in
+/// whichever block it started in. Hour resolution is what the quota window
+/// needs, and it costs one small vector per transcript in the cache.
+#[derive(Serialize, Deserialize, Clone, Default, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct HourBucket {
+    /// Hours since the epoch.
+    pub hour: u64,
+    /// Exact ms of the first activity inside this hour. The quota window opens
+    /// on a message, not on the top of the hour, so the gauge needs the minute.
+    #[serde(default)]
+    pub first_ms: u64,
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_create: u64,
+    pub messages: u32,
+}
+
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Session {
@@ -50,6 +72,12 @@ pub struct Session {
     pub lines_removed: u64,
     pub duration_ms: u64,
     pub models: Vec<ModelUsage>,
+    /// Only the block gauge reads these. They are kept in the on-disk cache —
+    /// skipping them there would leave every cached session with no hours, so
+    /// the gauge would only ever see transcripts that changed since the last
+    /// scan — but stripped before the list is handed to the UI (`slim`).
+    #[serde(default)]
+    pub hours: Vec<HourBucket>,
 }
 
 // ---------------------------------------------------------------- line typing
@@ -171,7 +199,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 
 /// `2026-09-03T01:04:12.345Z` -> epoch ms. Transcript timestamps are always
 /// UTC-suffixed ISO-8601; anything else yields None rather than a wrong number.
-fn iso_to_ms(s: &str) -> Option<u64> {
+pub fn iso_to_ms(s: &str) -> Option<u64> {
     let b = s.as_bytes();
     if b.len() < 19 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' {
         return None;
@@ -198,6 +226,16 @@ pub fn local_day(epoch_ms: u64, tz_offset_min: i32) -> String {
 
 // -------------------------------------------------------------------- parsing
 
+/// The bucket for the hour containing `ts`, created with its own hour number —
+/// `or_default()` here would leave `hour` at 0 and silently move the work to
+/// 1970.
+fn bucket(hours: &mut HashMap<u64, HourBucket>, ts: u64) -> &mut HourBucket {
+    let hour = ts / 3_600_000;
+    let h = hours.entry(hour).or_insert(HourBucket { hour, first_ms: ts, ..Default::default() });
+    h.first_ms = h.first_ms.min(ts);
+    h
+}
+
 fn parse_file(path: &Path, size: u64, mtime_ms: u64) -> Option<Session> {
     let raw = std::fs::read_to_string(path).ok()?;
     let mut s = Session {
@@ -210,13 +248,35 @@ fn parse_file(path: &Path, size: u64, mtime_ms: u64) -> Option<Session> {
     let mut first_ts: Option<u64> = None;
     let mut fallback_title = String::new();
     let mut per_model: HashMap<String, ModelUsage> = HashMap::new();
+    let mut hours: HashMap<u64, HourBucket> = HashMap::new();
+    // Records before the first timestamped one cannot be placed in an hour, so
+    // they are counted in the session totals but not in the block gauge.
+    let mut last_ts = 0u64;
 
     for line in raw.lines() {
         let Some(kind) = line_type(line) else { continue };
+        // ponytail: first `"timestamp":"` in the line. Claude Code writes it at
+        // the top level of every user and assistant record; a quoted one inside
+        // a message would misplace at most one record by an hour.
+        if matches!(kind, "assistant" | "user") {
+            if let Some(t) = str_after(line, 0, "timestamp").as_deref().and_then(iso_to_ms) {
+                last_ts = t;
+            }
+            if last_ts > 0 {
+                bucket(&mut hours, last_ts).messages += 1;
+            }
+        }
         match kind {
             "assistant" => {
                 s.messages += 1;
                 if let Some((model, inp, cc, cr, out)) = message_usage(line) {
+                    if last_ts > 0 {
+                        let h = bucket(&mut hours, last_ts);
+                        h.input += inp;
+                        h.cache_create += cc;
+                        h.cache_read += cr;
+                        h.output += out;
+                    }
                     let m = per_model.entry(model.clone()).or_insert_with(|| ModelUsage {
                         model,
                         ..Default::default()
@@ -296,6 +356,9 @@ fn parse_file(path: &Path, size: u64, mtime_ms: u64) -> Option<Session> {
         }
     }
 
+    s.hours = hours.into_values().collect();
+    s.hours.sort_by_key(|h| h.hour);
+
     s.models = per_model.into_values().collect();
     s.models.sort_by(|a, b| (b.output, b.input).cmp(&(a.output, a.input)));
     for m in &s.models {
@@ -321,7 +384,7 @@ fn parse_file(path: &Path, size: u64, mtime_ms: u64) -> Option<Session> {
 /// unchanged, so nothing is re-read, and fields added since are left at their
 /// defaults. That is exactly how the first cut reported 334k tokens in a chart
 /// while the per-model table added up to 1.2M.
-const CACHE_VERSION: u32 = 2;
+const CACHE_VERSION: u32 = 4;
 
 #[derive(Serialize, Deserialize, Default)]
 struct CacheEntry {
@@ -603,6 +666,205 @@ pub fn usage(sessions: &[Session], range: &str, tz_offset_min: i32) -> UsageRepo
     }
 }
 
+// ------------------------------------------------------------ quota windows
+
+/// Claude Code meters a subscription in rolling windows that open with your
+/// first message and last five hours. The dashboard answers "how much have I
+/// used"; this answers "when am I cut off", which is the question you actually
+/// have at 3pm.
+pub const BLOCK_HOURS: u64 = 5;
+const HOUR_MS: u64 = 3_600_000;
+
+#[derive(Serialize, Clone, Default, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Block {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_create: u64,
+    pub messages: u32,
+    /// Estimated: Claude Code records a dollar total per session, not per
+    /// message, so a session's cost is split across its hours in proportion to
+    /// output tokens. Tokens are exact; this is not.
+    pub cost_usd: f64,
+    /// The window that is still open. At most one, and only the last.
+    pub active: bool,
+}
+
+/// Every window that has held work, oldest first, capped at `limit`.
+///
+/// A window opens at the exact minute of the first activity after the previous
+/// one closed — the same rule Claude Code's own `/usage` resets on — so an idle
+/// gap longer than five hours starts a new one by construction.
+///
+/// ponytail: tokens are bucketed per hour, so an hour straddling a window
+/// boundary lands whole in the window its *first* message opened; at most one
+/// hour of work sits on the wrong side. Per-message buckets would fix it at the
+/// cost of keeping every timestamp in the cache.
+pub fn blocks(sessions: &[Session], limit: usize) -> Vec<Block> {
+    let mut by_hour: HashMap<u64, (HourBucket, f64)> = HashMap::new();
+    for s in sessions {
+        let session_out: u64 = s.hours.iter().map(|h| h.output).sum();
+        for h in &s.hours {
+            let e = by_hour.entry(h.hour).or_default();
+            // Cached sessions from before `first_ms` existed report 0; the top
+            // of the hour is the honest fallback for them.
+            let first = if h.first_ms > 0 { h.first_ms } else { h.hour * HOUR_MS };
+            e.0.first_ms = if e.0.first_ms == 0 { first } else { e.0.first_ms.min(first) };
+            e.0.input += h.input;
+            e.0.output += h.output;
+            e.0.cache_read += h.cache_read;
+            e.0.cache_create += h.cache_create;
+            e.0.messages += h.messages;
+            if session_out > 0 {
+                e.1 += s.cost_usd * (h.output as f64 / session_out as f64);
+            }
+        }
+    }
+
+    let mut hours: Vec<u64> = by_hour.keys().copied().collect();
+    hours.sort_unstable();
+
+    let mut out: Vec<Block> = Vec::new();
+    for h in hours {
+        let start = by_hour[&h].0.first_ms;
+        if !out.last().is_some_and(|b| start < b.end_ms) {
+            out.push(Block { start_ms: start, end_ms: start + BLOCK_HOURS * HOUR_MS, ..Default::default() });
+        }
+        let (hb, cost) = &by_hour[&h];
+        let b = out.last_mut().expect("just pushed");
+        b.input += hb.input;
+        b.output += hb.output;
+        b.cache_read += hb.cache_read;
+        b.cache_create += hb.cache_create;
+        b.messages += hb.messages;
+        b.cost_usd += cost;
+    }
+
+    let now = now_ms();
+    if let Some(b) = out.last_mut() {
+        b.active = now < b.end_ms;
+    }
+    if out.len() > limit {
+        out.drain(..out.len() - limit);
+    }
+    out
+}
+
+// ------------------------------------------------------------- full-text
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Hit {
+    pub file: String,
+    /// Every line that matched, capped — the point is to recognise the session,
+    /// not to read it here.
+    pub snippets: Vec<String>,
+    pub total: u32,
+}
+
+/// A readable fragment of a transcript line, centred on `at`.
+///
+/// The line is JSON, so the raw text is full of `{"type":"assistant",...}`.
+/// When the record parses and carries a message we show the message text;
+/// otherwise we fall back to a window of the raw line, which is still enough
+/// to recognise a hit. Slicing is by char boundary — a transcript is Unicode
+/// and byte slicing would panic on Vietnamese text.
+fn snippet(line: &str, at: usize, needle_len: usize) -> String {
+    let text = serde_json::from_str::<serde_json::Value>(line)
+        .ok()
+        .and_then(|v| v.get("message").map(message_text))
+        .filter(|t| !t.trim().is_empty());
+
+    let (source, at) = match &text {
+        // Re-find inside the extracted text; the byte offset from the raw line
+        // means nothing there.
+        Some(t) => match t.to_lowercase().find(&line[at..at + needle_len].to_lowercase()) {
+            Some(i) => (t.as_str(), i),
+            None => (t.as_str(), 0),
+        },
+        None => (line, at),
+    };
+
+    let start = source[..at].char_indices().rev().nth(60).map(|(i, _)| i).unwrap_or(0);
+    let end = source[at..]
+        .char_indices()
+        .nth(140)
+        .map(|(i, _)| at + i)
+        .unwrap_or(source.len());
+    let mut out = String::new();
+    if start > 0 {
+        out.push('…');
+    }
+    out.push_str(source[start..end].trim());
+    if end < source.len() {
+        out.push('…');
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Grep every transcript for `query`.
+///
+/// The session list only knows titles, last prompts and paths, so "where did I
+/// ask Claude about X last week" was unanswerable. This reads the bodies.
+///
+/// ponytail: a full read of every transcript per search, parallel the same way
+/// the scan is, with no index. On a few hundred megabytes that is well under a
+/// second on warm cache; an inverted index is the upgrade if that stops being
+/// true.
+pub fn search(claude_dir: &Path, query: &str, per_file: usize) -> Vec<Hit> {
+    let needle = query.trim().to_lowercase();
+    if needle.len() < 2 {
+        return Vec::new();
+    }
+
+    let root = claude_dir.join("projects");
+    let mut files: Vec<PathBuf> = Vec::new();
+    let Ok(projects) = std::fs::read_dir(&root) else { return Vec::new() };
+    for project in projects.flatten() {
+        let Ok(entries) = std::fs::read_dir(project.path()) else { continue };
+        files.extend(
+            entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("jsonl")),
+        );
+    }
+
+    let hit_of = |path: &PathBuf| -> Option<Hit> {
+        let raw = std::fs::read_to_string(path).ok()?;
+        let lower = raw.to_lowercase();
+        if !lower.contains(&needle) {
+            return None;
+        }
+        let mut snippets = Vec::new();
+        let mut total = 0u32;
+        for (line, low) in raw.lines().zip(lower.lines()) {
+            let Some(at) = low.find(&needle) else { continue };
+            total += 1;
+            if snippets.len() < per_file {
+                let s = snippet(line, at, needle.len());
+                if !s.is_empty() {
+                    snippets.push(s);
+                }
+            }
+        }
+        (total > 0).then(|| Hit { file: path.to_string_lossy().into_owned(), snippets, total })
+    };
+
+    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8);
+    let chunk = files.len().div_ceil(workers).max(1);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = files
+            .chunks(chunk)
+            .map(|c| scope.spawn(|| c.iter().filter_map(&hit_of).collect::<Vec<_>>()))
+            .collect();
+        handles.into_iter().filter_map(|h| h.join().ok()).flatten().collect()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -705,5 +967,101 @@ mod tests {
         assert!(is_noise("Caveat: The messages below were generated"));
         assert!(!is_noise("làm giúp tôi phần render 3D"));
         assert_eq!(truncate("  dòng đầu\ndòng hai", 80), "dòng đầu");
+    }
+
+    #[test]
+    fn blocks_close_after_five_hours_and_after_a_gap() {
+        let h = |hour: u64, out: u64| HourBucket {
+            hour,
+            first_ms: hour * 3_600_000 + 9 * 60_000, // hh:09, như một phiên thật
+            output: out,
+            messages: 1,
+            ..Default::default()
+        };
+        // A day far in the past so `active` cannot depend on the wall clock.
+        let base = 400_000u64;
+        let s = Session {
+            cost_usd: 10.0,
+            hours: vec![h(base, 100), h(base + 1, 300), h(base + 4, 600), h(base + 9, 500)],
+            ..Default::default()
+        };
+        let bs = blocks(std::slice::from_ref(&s), 60);
+        assert_eq!(bs.len(), 2, "giờ +9 rơi ngoài cửa sổ 5 giờ đầu");
+        assert_eq!(bs[0].output, 1000);
+        assert_eq!(bs[0].messages, 3);
+        // Cửa sổ mở đúng phút có tin nhắn đầu, không làm tròn về đầu giờ —
+        // đây là điều /usage của Claude Code hiển thị ("Resets 9:09am").
+        assert_eq!(bs[0].start_ms, base * 3_600_000 + 9 * 60_000);
+        assert_eq!(bs[0].end_ms, (base + 5) * 3_600_000 + 9 * 60_000);
+        assert_eq!(bs[1].start_ms, (base + 9) * 3_600_000 + 9 * 60_000);
+        assert_eq!(bs[1].output, 500);
+        // Hour +4 sits inside the first window, so it must not open a new one.
+        assert!(bs[1].start_ms >= bs[0].end_ms);
+        // Cost is split by output share, and the parts still add up.
+        assert!((bs[0].cost_usd - 10.0 * 1000.0 / 1500.0).abs() < 1e-9);
+        assert!((bs.iter().map(|b| b.cost_usd).sum::<f64>() - 10.0).abs() < 1e-9);
+        assert!(!bs[1].active, "cửa sổ của quá khứ không còn mở");
+
+        // A live window is flagged, and only the last one.
+        let now_h = now_ms() / 3_600_000;
+        let live = Session { hours: vec![h(now_h, 7)], ..Default::default() };
+        let bs = blocks(&[s, live], 60);
+        assert!(bs.last().unwrap().active);
+        assert!(bs[..bs.len() - 1].iter().all(|b| !b.active));
+    }
+
+    #[test]
+    fn hours_follow_message_timestamps_not_the_session_start() {
+        let dir = std::env::temp_dir().join("agentspace-hours-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("22222222-2222-3333-4444-555555555555.jsonl");
+        // Một phiên kéo dài qua hai giờ: token phải nằm đúng giờ của nó.
+        let content = [
+            r#"{"type":"user","cwd":"/tmp/p","timestamp":"2026-09-03T01:00:00.000Z","message":{"content":"chào"}}"#,
+            r#"{"type":"assistant","timestamp":"2026-09-03T01:30:00.000Z","message":{"model":"claude-opus-5","usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":40}}}"#,
+            r#"{"type":"assistant","timestamp":"2026-09-03T03:10:00.000Z","message":{"model":"claude-opus-5","usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":60}}}"#,
+        ]
+        .join("\n");
+        std::fs::write(&path, &content).unwrap();
+        let s = parse_file(&path, content.len() as u64, 0).expect("parses");
+        assert_eq!(s.hours.len(), 2);
+        assert_eq!(s.hours[0].output, 40);
+        assert_eq!(s.hours[1].output, 60);
+        assert_eq!(s.hours[1].hour - s.hours[0].hour, 2);
+        // Không đánh rơi token nào so với tổng của phiên.
+        assert_eq!(s.hours.iter().map(|h| h.output).sum::<u64>(), s.output);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn search_finds_bodies_the_metadata_never_sees() {
+        let dir = std::env::temp_dir().join("agentspace-search-test").join("projects").join("p");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("33333333-2222-3333-4444-555555555555.jsonl");
+        let content = [
+            r#"{"type":"user","cwd":"/tmp/p","timestamp":"2026-09-03T01:00:00.000Z","message":{"content":"sửa giúp tôi lỗi WebView2 trên Windows"}}"#,
+            r#"{"type":"assistant","timestamp":"2026-09-03T01:01:00.000Z","message":{"content":[{"type":"text","text":"Lỗi WebView2 thường do thiếu runtime."}]}}"#,
+            r#"{"type":"ai-title","aiTitle":"Một tiêu đề chẳng liên quan","sessionId":"x"}"#,
+        ]
+        .join("\n");
+        std::fs::write(&path, content).unwrap();
+        let root = std::env::temp_dir().join("agentspace-search-test");
+
+        let hits = search(&root, "webview2", 5);
+        assert_eq!(hits.len(), 1, "phải tìm ra dù tiêu đề không chứa từ khoá");
+        assert_eq!(hits[0].total, 2, "cả câu hỏi lẫn câu trả lời");
+        // Trích ra chữ người đọc được, không phải JSON thô.
+        assert!(hits[0].snippets.iter().any(|s| s.contains("thiếu runtime")), "{:?}", hits[0].snippets);
+        assert!(!hits[0].snippets.iter().any(|s| s.contains("\"type\"")), "{:?}", hits[0].snippets);
+
+        // Không khớp thì không trả về gì, và query quá ngắn bị từ chối.
+        assert!(search(&root, "khongcotutnay", 5).is_empty());
+        assert!(search(&root, "a", 5).is_empty());
+
+        // Tiếng Việt có dấu: cắt theo ký tự, không panic ở biên byte.
+        let hits = search(&root, "sửa giúp", 5);
+        assert_eq!(hits.len(), 1);
+
+        std::fs::remove_dir_all(&root).ok();
     }
 }

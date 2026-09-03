@@ -1,18 +1,21 @@
-import { useMemo, useState } from "react";
-import { ago, fmtDur, fmtInt, fmtUsd, normPath, shortPath, type Session } from "./api";
+import { useEffect, useMemo, useState } from "react";
+import { ago, api, fmtDur, fmtInt, fmtUsd, normPath, shortPath, type Hit, type Session } from "./api";
 
 const PLACEHOLDER = "(không tiêu đề)";
 
 export default function SessionsView({
-  sessions, busy, scopePath, onRefresh, onResume, onDelete, onRename,
+  sessions, busy, scopePath, runtime, onRefresh, onResume, onDelete, onRename,
 }: {
-  sessions: Session[]; busy: boolean; scopePath: string | null;
+  sessions: Session[]; busy: boolean; scopePath: string | null; runtime: string;
   onRefresh: () => void;
   onResume: (s: Session, fork: boolean) => void;
   onDelete: (files: string[]) => Promise<void>;
   onRename: (file: string, title: string) => Promise<void>;
 }) {
   const [q, setQ] = useState("");
+  const [deep, setDeep] = useState(false);
+  const [hits, setHits] = useState<Map<string, Hit> | null>(null);
+  const [searching, setSearching] = useState(false);
   const [scoped, setScoped] = useState(true);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [confirming, setConfirming] = useState(false);
@@ -24,6 +27,20 @@ export default function SessionsView({
   const startRename = (s: Session) =>
     setEditing({ file: s.file, title: s.title === PLACEHOLDER ? "" : s.title });
 
+  // Grepping every transcript is a real read, so it waits for a pause in the
+  // typing rather than firing on each keystroke.
+  useEffect(() => {
+    if (!deep || q.trim().length < 2) { setHits(null); return; }
+    setSearching(true);
+    const t = setTimeout(() => {
+      api.searchSessions(q, runtime)
+        .then((h) => setHits(new Map(h.map((x) => [x.file, x]))))
+        .catch(() => setHits(new Map()))
+        .finally(() => setSearching(false));
+    }, 350);
+    return () => { clearTimeout(t); setSearching(false); };
+  }, [q, deep, runtime]);
+
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return sessions.filter((s) => {
@@ -31,9 +48,10 @@ export default function SessionsView({
       if (s.messages === 0) return false;
       if (scoped && scopePath && normPath(s.cwd) !== normPath(scopePath)) return false;
       if (!needle) return true;
+      if (deep) return hits?.has(s.file) ?? false;
       return (s.title + " " + s.lastPrompt + " " + s.cwd + " " + s.id).toLowerCase().includes(needle);
     });
-  }, [sessions, q, scoped, scopePath]);
+  }, [sessions, q, scoped, scopePath, deep, hits]);
 
   const total = rows.reduce((a, s) => a + s.costUsd, 0);
   const chosen = rows.filter((s) => picked.has(s.file));
@@ -92,7 +110,12 @@ export default function SessionsView({
             <button className={!scoped ? "on" : ""} onClick={() => setScoped(false)}>Tất cả</button>
           </div>
         )}
-        <input className="search" style={{ margin: 0, width: 210 }} placeholder="Tìm tiêu đề, prompt, đường dẫn…"
+        <div className="seg" title="Tìm trong tiêu đề, hay grep toàn bộ nội dung transcript">
+          <button className={!deep ? "on" : ""} onClick={() => setDeep(false)}>Tiêu đề</button>
+          <button className={deep ? "on" : ""} onClick={() => setDeep(true)}>Nội dung</button>
+        </div>
+        <input className="search" style={{ margin: 0, width: 210 }}
+               placeholder={deep ? "Tìm trong nội dung phiên…" : "Tìm tiêu đề, prompt, đường dẫn…"}
                value={q} onChange={(e) => setQ(e.target.value)} />
         <button className="btn" onClick={onRefresh} disabled={busy}>{busy ? "Đang quét…" : "Quét lại"}</button>
       </div>
@@ -102,7 +125,13 @@ export default function SessionsView({
       <div className="scroll">
         <div className="rows">
           {rows.length === 0 && (
-            <div className="hint">{busy ? "Đang quét transcript…" : "Không có phiên nào khớp."}</div>
+            <div className="hint">
+              {busy || searching
+                ? "Đang quét transcript…"
+                : deep && q.trim().length < 2
+                  ? "Gõ ít nhất 2 ký tự để tìm trong nội dung."
+                  : "Không có phiên nào khớp."}
+            </div>
           )}
           {rows.map((s) => (
             <div className={"row" + (picked.has(s.file) ? " picked" : "")} key={s.id}>
@@ -125,7 +154,11 @@ export default function SessionsView({
                   <div className="t" onDoubleClick={() => startRename(s)}
                        title="Bấm đúp để đổi tên">{s.title}</div>
                 )}
-                {s.lastPrompt && <div className="p">↳ {s.lastPrompt}</div>}
+                {deep && hits?.get(s.file)
+                  ? hits.get(s.file)!.snippets.map((sn, i) => (
+                      <div className="p hit" key={i}>{sn}</div>
+                    ))
+                  : s.lastPrompt && <div className="p">↳ {s.lastPrompt}</div>}
                 <div className="meta">
                   <span className="chip">{shortPath(s.cwd).split("/").slice(-2).join("/")}</span>
                   {s.gitBranch && <span className="chip mono">{s.gitBranch}</span>}
@@ -136,6 +169,9 @@ export default function SessionsView({
                     <span className="chip num">+{fmtInt(s.linesAdded)} −{fmtInt(s.linesRemoved)}</span>
                   )}
                   {s.durationMs > 0 && <span className="chip num">{fmtDur(s.durationMs)}</span>}
+                  {deep && hits?.get(s.file) && (
+                    <span className="chip num">{fmtInt(hits.get(s.file)!.total)} dòng khớp</span>
+                  )}
                   <span className="chip">{ago(s.updatedAtMs)} trước</span>
                 </div>
               </div>

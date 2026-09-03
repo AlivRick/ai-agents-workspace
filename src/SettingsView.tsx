@@ -3,10 +3,11 @@ import { THEMES, type Theme } from "./themes";
 /** Grouped theme picker. Each row previews the palette it applies, so the
  *  choice is made by looking rather than by reading names. */
 export default function SettingsView({
-  current, onPick, restore, onRestore,
+  current, onPick, restore, onRestore, notify, onNotify,
 }: {
   current: string; onPick: (id: string) => void;
   restore: boolean; onRestore: (on: boolean) => void;
+  notify: boolean; onNotify: (on: boolean) => void;
 }) {
   const groups = [...new Set(THEMES.map((t) => t.group))];
   return (
@@ -28,6 +29,17 @@ export default function SettingsView({
                   Mỗi pane nhớ phiên Claude đang chạy và tự <code>claude --resume</code> khi mở app.
                   Tiến trình cũ không sống sót qua lần đóng app — cái khôi phục được là phiên trò chuyện,
                   không phải nội dung terminal.
+                </i>
+              </span>
+            </label>
+            <label className="opt">
+              <input type="checkbox" checked={notify} onChange={(e) => onNotify(e.target.checked)} />
+              <span>
+                <b>Thông báo hệ thống khi agent cần bạn</b>
+                <i>
+                  Bắn thông báo và nháy thanh tác vụ khi một pane chuyển sang <b>chờ duyệt</b> hoặc
+                  <b> xong</b>, và chỉ khi cửa sổ Agentspace <b>không</b> đang được focus — lúc bạn đang
+                  nhìn thẳng vào nó thì chip trên pane và hộp thư dưới chân đã nói rồi.
                 </i>
               </span>
             </label>

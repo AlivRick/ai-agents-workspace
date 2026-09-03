@@ -1,4 +1,5 @@
 mod engine;
+mod notify;
 mod sessions;
 mod store;
 mod term;
@@ -298,13 +299,22 @@ fn load_layout(app: State<App>) -> serde_json::Value {
 
 // ----------------------------------------------------------------- sessions
 
+/// The session list without its per-hour buckets. The UI never reads them and
+/// they are the bulk of the payload on a machine with hundreds of transcripts.
+fn slim(mut list: Vec<sessions::Session>) -> Vec<sessions::Session> {
+    for s in &mut list {
+        s.hours = Vec::new();
+    }
+    list
+}
+
 #[tauri::command]
 async fn scan_sessions(app: State<'_, App>, runtime: Option<String>) -> Result<Vec<sessions::Session>, String> {
     let r = rt(runtime);
     let (dir, cache, store) = (app.claude_dir(&r), app.cache_path(&r), app.sessions.clone());
     let found = blocking(move || sessions::scan(&dir, &cache)).await?;
     *store.lock().unwrap() = found.clone();
-    Ok(found)
+    Ok(slim(found))
 }
 
 #[tauri::command]
@@ -322,6 +332,43 @@ async fn usage_report(
         sessions::usage(&list, &range, tz_offset_min)
     })
     .await
+}
+
+/// The rolling five-hour windows Claude Code meters a subscription in. Reads
+/// the same cached scan the dashboard uses, so it costs nothing extra.
+#[tauri::command]
+async fn usage_blocks(app: State<'_, App>, runtime: Option<String>) -> Result<Vec<sessions::Block>, String> {
+    let r = rt(runtime);
+    let cached = app.sessions.lock().unwrap().clone();
+    let (dir, cache) = (app.claude_dir(&r), app.cache_path(&r));
+    blocking(move || {
+        let list = if cached.is_empty() { sessions::scan(&dir, &cache) } else { cached };
+        sessions::blocks(&list, 48)
+    })
+    .await
+}
+
+/// What `/usage` says — the real percentages and reset times, which only the
+/// server knows. Blocking: one `claude -p /usage` subprocess, a few seconds.
+/// Returns the raw text; the UI parses the three lines it cares about.
+#[tauri::command]
+async fn usage_limits(runtime: Option<String>) -> Result<String, String> {
+    let r = rt(runtime);
+    blocking(move || engine::usage_text(&r))
+        .await?
+        .ok_or_else(|| "Không đọc được /usage từ CLI".to_string())
+}
+
+/// Grep the bodies of every transcript. The metadata search in the UI only
+/// sees titles and paths; this is what answers "where did I ask about X".
+#[tauri::command]
+async fn search_sessions(
+    app: State<'_, App>,
+    query: String,
+    runtime: Option<String>,
+) -> Result<Vec<sessions::Hit>, String> {
+    let dir = app.claude_dir(&rt(runtime));
+    blocking(move || sessions::search(&dir, &query, 3)).await
 }
 
 /// Permanently deletes transcripts. The UI confirms first; the guard in
@@ -358,7 +405,7 @@ async fn rename_session(
     })
     .await??;
     *store.lock().unwrap() = fresh.clone();
-    Ok(fresh)
+    Ok(slim(fresh))
 }
 
 // ------------------------------------------------- nội dung của workspace
@@ -379,6 +426,31 @@ async fn list_skills(app: State<'_, App>, workspace: String, runtime: Option<Str
 async fn list_memories(app: State<'_, App>, workspace: String, runtime: Option<String>) -> Result<Vec<ws::MemoryInfo>, String> {
     let dir = app.claude_dir(&rt(runtime));
     blocking(move || ws::memories(&workspace, &dir)).await
+}
+
+#[tauri::command]
+async fn list_agents(app: State<'_, App>, workspace: String, runtime: Option<String>) -> Result<Vec<ws::SkillInfo>, String> {
+    let dir = app.claude_dir(&rt(runtime));
+    blocking(move || ws::agents(&workspace, &dir)).await
+}
+
+#[tauri::command]
+async fn list_commands(app: State<'_, App>, workspace: String, runtime: Option<String>) -> Result<Vec<ws::SkillInfo>, String> {
+    let dir = app.claude_dir(&rt(runtime));
+    blocking(move || ws::commands(&workspace, &dir)).await
+}
+
+#[tauri::command]
+async fn list_mcp(app: State<'_, App>, workspace: String, runtime: Option<String>) -> Result<Vec<ws::McpServer>, String> {
+    let r = rt(runtime);
+    let (dir, json) = (app.claude_dir(&r), app.claude_json(&r));
+    blocking(move || ws::mcp_servers(&workspace, &dir, &json)).await
+}
+
+#[tauri::command]
+async fn list_plugins(app: State<'_, App>, runtime: Option<String>) -> Result<ws::PluginReport, String> {
+    let dir = app.claude_dir(&rt(runtime));
+    blocking(move || ws::plugins(&dir)).await
 }
 
 #[tauri::command]
@@ -449,6 +521,13 @@ fn pty_close(terms: State<term::Terminals>, id: String) {
     term::close(&terms, &id)
 }
 
+/// Show a toast whose click raises the window and selects `pane`. False means
+/// the platform has no clickable path and the UI should use the plugin.
+#[tauri::command]
+fn toast(app: tauri::AppHandle, title: String, body: String, pane: String) -> bool {
+    notify::show(&app, &title, &body, &pane)
+}
+
 #[tauri::command]
 fn hook_events(app: State<App>) -> Vec<serde_json::Value> {
     term::drain_hooks(&app.data_dir)
@@ -459,6 +538,7 @@ fn hook_events(app: State<App>) -> Vec<serde_json::Value> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(term::Terminals::default())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
@@ -502,11 +582,18 @@ pub fn run() {
             load_layout,
             scan_sessions,
             usage_report,
+            usage_blocks,
+            search_sessions,
+            usage_limits,
             delete_sessions,
             rename_session,
             claude_docs,
             list_skills,
             list_memories,
+            list_agents,
+            list_commands,
+            list_mcp,
+            list_plugins,
             read_doc,
             write_doc,
             delete_doc,
@@ -515,6 +602,7 @@ pub fn run() {
             pty_resize,
             pty_close,
             hook_events,
+            toast,
         ])
         .run(tauri::generate_context!())
         .expect("Agentspace không khởi động được");

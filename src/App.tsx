@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { open as pickFolder } from "@tauri-apps/plugin-dialog";
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import type { Terminal } from "@xterm/xterm";
-import Pane, { BlockList, type Block } from "./Pane";
+import Pane, { BlockList, type Block as PaneBlock } from "./Pane";
 import ImportSheet from "./ImportSheet";
 import SessionsView from "./SessionsView";
 import SettingsView from "./SettingsView";
@@ -9,13 +12,23 @@ import UsageView from "./UsageView";
 import WorkspaceView from "./WorkspaceView";
 import { applyTheme, themeById } from "./themes";
 import { reorder } from "./reorder";
-import { api, fmtTokens, fmtUsd, normPath, shortPath, type EngineStatus, type GitInfo, type Runtime, type Session, type Workspace } from "./api";
+import {
+  ago, api, blockTokens, fmtTokens, fmtUsd, normPath, shortPath, until,
+  type Block, type EngineStatus, type GitInfo, type Runtime, type Session, type Workspace,
+} from "./api";
 
 type View = "code" | "workspace" | "sessions" | "usage" | "settings";
 type Status = "idle" | "run" | "att" | "done";
+/** One entry of the todo list Claude keeps for itself, as TodoWrite writes it. */
+type Todo = { content: string; activeForm?: string; status: string };
 type PaneInfo = {
   id: string; cwd: string; runtime: string; status: Status;
-  tool?: string; message?: string; sessionId?: string; blocks: Block[];
+  /** When the pane last changed status — what the inbox sorts and ages by. */
+  since: number;
+  /** A name you gave the pane. Two panes on one workspace are otherwise
+   *  identical in the header, which is exactly when you have several. */
+  name?: string;
+  tool?: string; message?: string; sessionId?: string; blocks: PaneBlock[]; todos: Todo[];
 };
 
 const Icon = ({ d }: { d: string }) => (
@@ -54,9 +67,16 @@ export default function App() {
   const [overPane, setOverPane] = useState<string | null>(null);
   const [focus, setFocus] = useState<string | null>(null);
   const [showBlocks, setShowBlocks] = useState<string | null>(null);
+  const [showTodos, setShowTodos] = useState<string | null>(null);
+  const [zoom, setZoom] = useState<string | null>(null);
+  const [naming, setNaming] = useState<{ id: string; value: string } | null>(null);
+  const [broadcast, setBroadcast] = useState("");
   const [sessions, setSessions] = useState<Session[]>([]);
   const [scanning, setScanning] = useState(false);
   const [today, setToday] = useState({ costUsd: 0, output: 0 });
+  const [block, setBlock] = useState<Block | null>(null);
+  const [inbox, setInbox] = useState(false);
+  const [notify, setNotify] = useState(() => localStorage.getItem("notify") !== "0");
   // Mở lại app thì PTY cũ đã chết; thứ khôi phục được là *phiên Claude* trong
   // pane đó — `claude --resume <id>`. Mặc định bật vì đó là lý do có tuỳ chọn.
   const [restore, setRestore] = useState(() => localStorage.getItem("restore") !== "0");
@@ -94,6 +114,11 @@ export default function App() {
     setSideOpen((o) => { localStorage.setItem("side", o ? "0" : "1"); return !o; });
   }, []);
 
+  const pickNotify = useCallback((on: boolean) => {
+    setNotify(on);
+    localStorage.setItem("notify", on ? "1" : "0");
+  }, []);
+
   const pickRestore = useCallback((on: boolean) => {
     setRestore(on);
     localStorage.setItem("restore", on ? "1" : "0");
@@ -129,6 +154,9 @@ export default function App() {
     api.usageReport("today", runtime)
       .then((r) => { if (rtRef.current === runtime) setToday(r.total); })
       .catch(() => {});
+    api.usageBlocks(runtime)
+      .then((bs) => { if (rtRef.current === runtime) setBlock(bs.at(-1)?.active ? bs[bs.length - 1] : null); })
+      .catch(() => {});
   }, [runtime]);
 
   useEffect(() => {
@@ -154,7 +182,9 @@ export default function App() {
       .loadLayout()
       .then(async (l) => {
         if (l?.panes?.length) {
-          const list: PaneInfo[] = l.panes.map((p: any) => ({ runtime: "host", ...p, status: "idle", blocks: [] }));
+          const list: PaneInfo[] = l.panes.map((p: any) => ({
+            runtime: "host", ...p, status: "idle", since: Date.now(), blocks: [], todos: [],
+          }));
           // Xếp lệnh resume vào hàng đợi *trước* khi pane tồn tại, nên onReady
           // của terminal chắc chắn thấy nó — giải xong sau đó thì đã lỡ.
           if (localStorage.getItem("restore") !== "0")
@@ -188,7 +218,7 @@ export default function App() {
   // depending on it wrote state.json to disk twice a second. Save only when the
   // part that is actually persisted changes.
   const layoutKey = useMemo(
-    () => JSON.stringify({ wsId, panes: panes.map((p) => [p.id, p.cwd, p.runtime, p.sessionId ?? ""]) }),
+    () => JSON.stringify({ wsId, panes: panes.map((p) => [p.id, p.cwd, p.runtime, p.sessionId ?? "", p.name ?? ""]) }),
     [wsId, panes],
   );
   useEffect(() => {
@@ -196,7 +226,9 @@ export default function App() {
     const l = JSON.parse(layoutKey);
     api.saveLayout({
       wsId: l.wsId,
-      panes: l.panes.map(([id, cwd, runtime, sessionId]: string[]) => ({ id, cwd, runtime, sessionId: sessionId || undefined })),
+      panes: l.panes.map(([id, cwd, runtime, sessionId, name]: string[]) => ({
+        id, cwd, runtime, sessionId: sessionId || undefined, name: name || undefined,
+      })),
     });
   }, [layoutLoaded, layoutKey]);
 
@@ -216,18 +248,31 @@ export default function App() {
           const mine = events.filter((e) => e.paneId === p.id);
           if (!mine.length) return p;
           const n = { ...p };
+          const before = p.status;
           for (const e of mine) {
             if (e.session_id) n.sessionId = e.session_id;
             switch (e.hook_event_name) {
               case "SessionStart": n.status = "idle"; break;
               case "UserPromptSubmit": n.status = "run"; n.tool = undefined; n.message = undefined; break;
               case "PreToolUse": n.status = "run"; n.tool = e.tool_name; break;
-              case "PostToolUse": n.status = "run"; n.tool = undefined; break;
+              case "PostToolUse":
+                n.status = "run";
+                n.tool = undefined;
+                // Claude keeps its own plan in TodoWrite; the hook hands us the
+                // exact list it just wrote. Shape-checked rather than trusted:
+                // an unfamiliar payload leaves the old list alone.
+                if (e.tool_name === "TodoWrite" && Array.isArray(e.tool_input?.todos)) {
+                  n.todos = e.tool_input.todos.filter(
+                    (t: any) => t && typeof t.content === "string" && typeof t.status === "string",
+                  );
+                }
+                break;
               case "Notification": n.status = "att"; n.message = e.message; break;
               case "Stop": n.status = "done"; n.tool = undefined; n.message = undefined; break;
-              case "SessionEnd": n.status = "idle"; n.sessionId = undefined; break;
+              case "SessionEnd": n.status = "idle"; n.sessionId = undefined; n.todos = []; break;
             }
           }
+          if (n.status !== before) n.since = Date.now();
           return n;
         }),
       );
@@ -235,11 +280,58 @@ export default function App() {
     return () => clearInterval(t);
   }, []);
 
+  // -------------------------------------------------------- hộp thư & báo
+  // A pane waiting for approval while you are in another window is the one
+  // thing this app knows and the terminal cannot tell you. It only fires when
+  // Agentspace is unfocused: on screen the pane's chip and the footer counter
+  // already say it, and a toast over the window you are typing in is noise.
+  const granted = useRef(false);
+  useEffect(() => {
+    isPermissionGranted()
+      .then(async (ok) => { granted.current = ok || (await requestPermission()) === "granted"; })
+      .catch(() => {});
+  }, []);
+
+  const seen = useRef<Record<string, Status>>({});
+  useEffect(() => {
+    for (const p of panes) {
+      const was = seen.current[p.id];
+      seen.current[p.id] = p.status;
+      if (was === p.status || (p.status !== "att" && p.status !== "done")) continue;
+      if (!notify || !granted.current || document.hasFocus()) continue;
+      const name = p.name || shortPath(p.cwd).split(/[/\\]/).pop() || "pane";
+      const title = p.status === "att" ? `${name} · chờ bạn duyệt` : `${name} · Claude đã xong`;
+      const body = p.message ?? p.tool ?? STATUS[p.status][1];
+      // Windows gets a toast that can be clicked back into the right pane; on
+      // anything else that is not possible, so the plugin shows a plain one.
+      api.toast(title, body, p.id)
+        .then((clickable) => { if (!clickable) sendNotification({ title, body }); })
+        .catch(() => sendNotification({ title, body }));
+      void getCurrentWindow().requestUserAttention(UserAttentionType.Informational);
+    }
+  }, [panes, notify]);
+
+  const paneName = (p: PaneInfo) => p.name || shortPath(p.cwd).split(/[/\\]/).pop() || "pane";
+
+  const jump = useCallback((id: string) => {
+    setInbox(false);
+    setView("code");
+    setFocus(id);
+    terms.current[id]?.focus();
+  }, []);
+
+  // Clicking the toast lands here: Rust has already raised the window, this
+  // selects the pane that asked for you.
+  useEffect(() => {
+    const un = listen<string>("notify-click", (e) => jump(e.payload));
+    return () => { void un.then((f) => f()); };
+  }, [jump]);
+
   // ----------------------------------------------------------------- panes
   const addPane = useCallback((dir: string, command?: string, rt = runtime) => {
     const id = `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     if (command) queued.current[id] = command;
-    setPanes((p) => [...p, { id, cwd: dir, runtime: rt, status: "idle", blocks: [] }]);
+    setPanes((p) => [...p, { id, cwd: dir, runtime: rt, status: "idle", since: Date.now(), blocks: [], todos: [] }]);
     setFocus(id);
     setView("code");
     return id;
@@ -265,8 +357,24 @@ export default function App() {
     }
   }, [panes, addPane, send, runtime]);
 
+  const commitName = () => {
+    if (!naming) return;
+    const { id, value } = naming;
+    setNaming(null);
+    setPanes((all) => all.map((x) => (x.id === id ? { ...x, name: value.trim() || undefined } : x)));
+  };
+
+  /** One line typed once, delivered to every pane. */
+  const sendAll = () => {
+    const text = broadcast.trim();
+    if (!text) return;
+    panes.forEach((p) => send(p.id, text));
+    setBroadcast("");
+  };
+
   const closePane = (id: string) => {
     setPanes((p) => p.filter((x) => x.id !== id));
+    setZoom((z) => (z === id ? null : z));
     delete terms.current[id];
   };
 
@@ -326,6 +434,9 @@ export default function App() {
   // that stops being enough.
   const cols = panes.length <= 1 ? 1 : panes.length <= 2 ? 2 : panes.length <= 4 ? 2 : 3;
   const attention = panes.filter((p) => p.status === "att").length;
+  const waiting = panes
+    .filter((p) => p.status === "att" || p.status === "done")
+    .sort((a, b) => (a.status === b.status ? b.since - a.since : a.status === "att" ? -1 : 1));
   const focused = panes.find((p) => p.id === focus) ?? null;
 
   return (
@@ -445,8 +556,15 @@ export default function App() {
                           disabled={!engine?.signedIn}>Chạy Claude</button>
                 )}
                 {panes.length > 1 && (
-                  <button className="btn" onClick={() => runClaude(panes.map((p) => p.id))}
-                          disabled={!engine?.signedIn}>Chạy tất cả</button>
+                  <>
+                    <input className="search" style={{ margin: 0, width: 190 }} value={broadcast}
+                           placeholder="Gửi mọi pane… (Enter)"
+                           title="Gõ một dòng, Enter gửi vào tất cả pane"
+                           onChange={(e) => setBroadcast(e.target.value)}
+                           onKeyDown={(e) => { if (e.key === "Enter") sendAll(); }} />
+                    <button className="btn" onClick={() => runClaude(panes.map((p) => p.id))}
+                            disabled={!engine?.signedIn}>Chạy tất cả</button>
+                  </>
                 )}
                 <button className="btn" onClick={() => cwd && addPane(cwd)} disabled={!cwd}>+ Pane</button>
               </div>
@@ -463,12 +581,14 @@ export default function App() {
                   </div>
                 </div>
               ) : (
-                <div className="grid" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
+                <div className="grid" style={{ gridTemplateColumns: `repeat(${zoom ? 1 : cols}, minmax(0, 1fr))` }}>
                   {panes.map((p) => {
                     const [cls, statusLabel] = STATUS[p.status];
                     return (
                       <section key={p.id}
                                className={"pane" + (focus === p.id ? " focus" : "") + (overPane === p.id ? " over" : "")}
+                               // Hidden, not unmounted: unmounting kills the PTY.
+                               style={zoom && zoom !== p.id ? { display: "none" } : undefined}
                                onMouseDown={() => setFocus(p.id)}>
                         <header className="ph" draggable
                                 onDragStart={(e) => { dragPane.current = p.id; e.dataTransfer.effectAllowed = "move"; }}
@@ -483,7 +603,22 @@ export default function App() {
                                   if (dragPane.current) movePane(dragPane.current, p.id);
                                   dragPane.current = null; setOverPane(null);
                                 }}>
-                          <span className="nm">{shortPath(p.cwd).split(/[/\\]/).pop()}</span>
+                          {naming?.id === p.id ? (
+                            <input className="rename" autoFocus value={naming.value}
+                                   placeholder={shortPath(p.cwd).split(/[/\\]/).pop()}
+                                   onFocus={(e) => e.currentTarget.select()}
+                                   onChange={(e) => setNaming({ id: p.id, value: e.target.value })}
+                                   onBlur={commitName}
+                                   onKeyDown={(e) => {
+                                     if (e.key === "Enter") commitName();
+                                     if (e.key === "Escape") setNaming(null);
+                                   }} />
+                          ) : (
+                            <span className="nm" title="Bấm đúp để đặt tên pane"
+                                  onDoubleClick={() => setNaming({ id: p.id, value: p.name ?? "" })}>
+                              {p.name || shortPath(p.cwd).split(/[/\\]/).pop()}
+                            </span>
+                          )}
                           {p.runtime !== "host" && (
                             <span className="chip" title={p.runtime}>
                               {runtimes.find((r) => r.id === p.runtime)?.label ?? p.runtime}
@@ -499,14 +634,43 @@ export default function App() {
                                       disabled={panes[panes.length - 1].id === p.id} onClick={() => movePane(p.id, 1)}>›</button>
                             </>
                           )}
+                          {p.todos.length > 0 && (
+                            <button className="btn ghost" style={{ padding: "1px 6px" }}
+                                    onClick={() => setShowTodos(showTodos === p.id ? null : p.id)}
+                                    title="Việc Claude đang tự lên kế hoạch">
+                              ☑ {p.todos.filter((t) => t.status === "completed").length}/{p.todos.length}
+                            </button>
+                          )}
                           <button className="btn ghost" style={{ padding: "1px 6px" }}
                                   onClick={() => setShowBlocks(showBlocks === p.id ? null : p.id)}
                                   title="Lệnh đã chạy">⌘ {p.blocks.length}</button>
+                          <button className="btn ghost" style={{ padding: "1px 6px" }}
+                                  onClick={() => setZoom(zoom === p.id ? null : p.id)}
+                                  title={zoom === p.id ? "Thu về lưới" : "Phóng to pane này"}>
+                            {zoom === p.id ? "⤡" : "⤢"}
+                          </button>
                           <button className="btn ghost" style={{ padding: "1px 6px" }}
                                   onClick={() => runClaude([p.id])} title="Chạy Claude ở pane này">▶</button>
                           <button className="btn ghost" style={{ padding: "1px 6px" }}
                                   onClick={() => closePane(p.id)} title="Đóng pane">×</button>
                         </header>
+                        {showTodos === p.id && (
+                          <div className="blocks todos">
+                            {p.todos.map((t, i) => (
+                              <div className="b" key={i}>
+                                <span className="ec" style={{
+                                  color: t.status === "completed" ? "var(--ok)"
+                                    : t.status === "in_progress" ? "var(--accent)" : "var(--faint)",
+                                }}>
+                                  {t.status === "completed" ? "✓" : t.status === "in_progress" ? "▸" : "○"}
+                                </span>
+                                <code style={{ opacity: t.status === "completed" ? 0.55 : 1 }}>
+                                  {t.status === "in_progress" ? t.activeForm || t.content : t.content}
+                                </code>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                         {showBlocks === p.id && (
                           <BlockList blocks={p.blocks} onJump={(b) => {
                             if (b.marker) terms.current[p.id]?.scrollToLine(Math.max(b.marker.line - 2, 0));
@@ -517,7 +681,7 @@ export default function App() {
                           id={p.id} cwd={p.cwd} runtime={p.runtime} focused={focus === p.id} palette={theme.term}
                           onFocus={() => setFocus(p.id)}
                           onCwd={(c) => setPanes((all) => all.map((x) => (x.id === p.id ? { ...x, cwd: c } : x)))}
-                          onBlocks={(b) => setPanes((all) => all.map((x) => (x.id === p.id ? { ...x, blocks: b } : x)))}
+                          onBlocks={(b: PaneBlock[]) => setPanes((all) => all.map((x) => (x.id === p.id ? { ...x, blocks: b } : x)))}
                           onReady={(t) => {
                             terms.current[p.id] = t;
                             const q = queued.current[p.id];
@@ -536,19 +700,48 @@ export default function App() {
             <WorkspaceView workspace={ws?.path ?? ""} name={ws ? label(ws) : ""} runtime={runtime} />
           )}
           {view === "sessions" && (
-            <SessionsView sessions={sessions} busy={scanning} scopePath={ws?.path ?? null}
+            <SessionsView sessions={sessions} busy={scanning} scopePath={ws?.path ?? null} runtime={runtime}
                           onRefresh={loadSessions} onResume={resume} onDelete={deleteSessions}
                           onRename={renameSession} />
           )}
           {view === "usage" && <UsageView runtime={runtime} />}
           {view === "settings" && (
-            <SettingsView current={theme.id} onPick={pickTheme} restore={restore} onRestore={pickRestore} />
+            <SettingsView current={theme.id} onPick={pickTheme} restore={restore} onRestore={pickRestore}
+                          notify={notify} onNotify={pickNotify} />
           )}
         </main>
       </div>
 
       {importable && (
         <ImportSheet paths={importable} onCancel={() => setImportable(null)} onConfirm={confirmImport} />
+      )}
+
+      {inbox && (
+        <>
+          <div className="inbox-scrim" onClick={() => setInbox(false)} />
+          <div className="inbox">
+            <header>
+              <b>Hộp thư</b>
+              <span className="sp" />
+              <span>{attention} chờ duyệt · {waiting.length - attention} xong</span>
+            </header>
+            {waiting.length === 0 ? (
+              <div className="hint">Không có pane nào đang cần bạn.</div>
+            ) : (
+              waiting.map((p) => {
+                const [cls, statusLabel] = STATUS[p.status];
+                return (
+                  <button key={p.id} className="inbox-row" onClick={() => jump(p.id)}>
+                    <span className={"chip " + cls}><span className="d" />{statusLabel}</span>
+                    <span className="n">{paneName(p)}</span>
+                    <span className="msg">{p.message ?? p.tool ?? shortPath(p.cwd)}</span>
+                    <span className="t">{ago(p.since)}</span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </>
       )}
 
       <footer className="status">
@@ -562,8 +755,17 @@ export default function App() {
         )}
         <span>Claude Code {engine?.version?.split(" ")[0] ?? "?"}</span>
         <span className="sp" />
-        {attention > 0 && <span style={{ color: "var(--warn)" }}>{attention} pane chờ duyệt</span>}
+        <button className={"inbox-btn" + (attention > 0 ? " att" : "")} onClick={() => setInbox((o) => !o)}
+                title="Pane nào đang chờ bạn duyệt hoặc vừa xong">
+          Hộp thư{waiting.length > 0 ? ` ${waiting.length}` : ""}
+          {attention > 0 && <span className="dot" />}
+        </button>
         <span>{panes.length} pane</span>
+        {block && (
+          <span title={`Cửa sổ 5 giờ mở lúc ${new Date(block.startMs).toLocaleTimeString("vi-VN")} — xem tab Mức dùng`}>
+            cửa sổ 5h <b>{fmtTokens(blockTokens(block))}</b> · còn {until(block.endMs)}
+          </span>
+        )}
         <span>hôm nay <b>{fmtTokens(today.output)}</b> token ra{today.costUsd > 0 ? ` · ${fmtUsd(today.costUsd)}` : ""}</span>
       </footer>
     </div>

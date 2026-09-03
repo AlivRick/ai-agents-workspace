@@ -185,6 +185,59 @@ fn has_credential() -> bool {
     cfg!(target_os = "macos")
 }
 
+/// The real quota numbers, straight from the CLI.
+///
+/// `claude -p /usage` prints the same lines the `/usage` dialog shows, and they
+/// come from the server — the only thing that knows the actual limit. This is
+/// still the user's own binary on their own subscription; we never call the API.
+///
+/// ponytail: one subprocess per call, no timeout — a print-mode run always
+/// exits on its own. Costs no model tokens: the slash command answers before a
+/// turn starts. Upgrade path if it ever hangs: spawn + wait with a deadline.
+pub fn usage_text(runtime: &str) -> Option<String> {
+    // Một print-run vẫn để lại transcript như mọi phiên khác. Chạy trong thư
+    // mục riêng để đống rác đó nằm gọn một chỗ, rồi xoá — nếu không, hỏi hạn
+    // mức 5 phút một lần sẽ đẻ ra hàng trăm "phiên" giả trong chính thống kê
+    // mà thẻ này đang vẽ.
+    const PROBE: &str = "agentspace-usage-probe";
+    let out = if let Some(distro) = wsl::distro_of(runtime) {
+        wsl::run(
+            distro,
+            &format!(
+                "d=\"${{TMPDIR:-/tmp}}/{PROBE}\"; mkdir -p \"$d\" && cd \"$d\" && claude -p /usage;                  rm -rf \"$HOME/.claude/projects/\"*-{PROBE}"
+            ),
+        )
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+    } else {
+        let dir = std::env::temp_dir().join(PROBE);
+        std::fs::create_dir_all(&dir).ok()?;
+        let out = std::process::Command::new(find_cli()?)
+            .args(["-p", "/usage"])
+            .current_dir(&dir)
+            // Không có stdin thì CLI đứng chờ 3 giây rồi mới chạy tiếp.
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+        clean_probe(&dir, PROBE);
+        out
+    }?;
+    // Not signed in, or an older CLI: the percentage lines simply are not there.
+    out.contains("% used").then_some(out)
+}
+
+/// Xoá thư mục transcript mà probe vừa tạo. Chỉ xoá đúng thư mục mang tên
+/// probe — tên do chính mình dựng, nên không có đường nào chạm vào phiên thật.
+fn clean_probe(dir: &std::path::Path, probe: &str) {
+    let name = crate::util::escape_project_path(&dir.to_string_lossy());
+    if !name.ends_with(probe) {
+        return;
+    }
+    if let Some(home) = claude_home() {
+        std::fs::remove_dir_all(home.join("projects").join(name)).ok();
+    }
+}
+
 /// Status of the CLI *for a given runtime*. A Windows install of Claude Code
 /// says nothing about whether the WSL distro has one, and vice versa — the pane
 /// that will run it is the thing that has to be checked.
@@ -279,6 +332,25 @@ pub fn status(runtime: &str) -> EngineStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probe_cleanup_only_ever_touches_the_probe_folder() {
+        // Tên thư mục transcript phải khớp cách Claude Code đặt tên, nếu không
+        // rác không bao giờ bị xoá.
+        assert_eq!(
+            crate::util::escape_project_path("/tmp/agentspace-usage-probe"),
+            "-tmp-agentspace-usage-probe"
+        );
+        // Và một thư mục không phải probe thì không được đụng tới: dựng một
+        // "phiên thật" giả rồi gọi hàm dọn với đường dẫn đó.
+        let home = claude_home().unwrap_or_else(|| std::env::temp_dir().join(".claude"));
+        let fake = std::env::temp_dir().join("agentspace-not-a-probe");
+        let dir = home.join("projects").join(crate::util::escape_project_path(&fake.to_string_lossy()));
+        std::fs::create_dir_all(&dir).unwrap();
+        clean_probe(&fake, "agentspace-usage-probe");
+        assert!(dir.exists(), "thư mục không phải probe phải còn nguyên");
+        std::fs::remove_dir_all(&dir).ok();
+    }
     use serde_json::json;
 
     #[test]
