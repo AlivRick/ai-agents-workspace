@@ -10,8 +10,14 @@ mkdir -p "$DEST"
 
 # Windows khong cho ghi de mot exe dang chay, nhung cho DOI TEN no. Doi ten
 # truoc roi moi chep de con copy duoc trong luc app van dang mo.
+#
+# Ten cu phai la ten MOI moi lan: mot ban .old.exe da tung chay van con bi
+# Windows khoa, nen `mv -f` de len no chet o buoc xoa dich. Don rac truoc, bo
+# qua cai nao khong xoa duoc.
+rm -f "$DEST"/*.old.exe 2>/dev/null || true
 [ -f "$DEST/Agentspace-portable-x64.exe" ] &&
-  mv -f "$DEST/Agentspace-portable-x64.exe" "$DEST/Agentspace-portable-x64.old.exe"
+  mv -f "$DEST/Agentspace-portable-x64.exe" \
+        "$DEST/Agentspace-portable-x64.$(date +%H%M%S).old.exe"
 
 cp "$SRC/agentspace.exe" "$DEST/Agentspace-portable-x64.exe"
 cp "$SRC"/bundle/nsis/*_x64-setup.exe "$DEST/"

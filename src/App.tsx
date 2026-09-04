@@ -169,12 +169,25 @@ export default function App() {
   // dẫn POSIX của một workspace WSL thì git của Windows không mở nổi, và mọi
   // workspace Linux sẽ bị báo là "không phải repo" — mất branch ở thanh bên,
   // mất luôn ô chọn worktree trong bảng tạo tác vụ. Đổi runtime là hỏi lại.
+  //
+  // Hỏi lại theo nhịp, vì con số file bẩn nói về một thư mục mà app không phải
+  // là thứ duy nhất chạm vào: agent trong pane sửa file, bạn commit ở terminal
+  // khác. Chỉ hỏi khi cửa sổ đang được nhìn — mỗi lượt là một tiến trình git
+  // cho mỗi workspace (một wsl.exe nữa nếu là distro), và một app nằm dưới
+  // taskbar không có gì để cập nhật.
   useEffect(() => {
     const paths = workspaces.map((w) => w.path);
     if (!paths.length) return;
-    api.gitInfo(paths, runtime)
-      .then((info) => setGit(Object.fromEntries(info.map((g) => [g.path, g]))))
-      .catch(() => {});
+    const load = () =>
+      api.gitInfo(paths, runtime)
+        .then((info) => setGit(Object.fromEntries(info.map((g) => [g.path, g]))))
+        .catch(() => {});
+    load();
+    const tick = setInterval(() => document.hasFocus() && load(), 15_000);
+    // Quay lại cửa sổ là lúc số liệu chắc chắn cũ nhất: bạn vừa đi làm gì đó ở
+    // chỗ khác. Không chờ hết nhịp.
+    window.addEventListener("focus", load);
+    return () => { clearInterval(tick); window.removeEventListener("focus", load); };
   }, [workspaces, runtime]);
   // Runtime hiện tại, đọc được từ trong một promise đang bay. Bản quét trả về
   // muộn của runtime cũ mà ghi đè thì số liệu nhảy về của máy sai.
