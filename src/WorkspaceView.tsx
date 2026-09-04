@@ -4,25 +4,33 @@ import {
   type Doc, type McpServer, type MemoryInfo, type PluginReport, type SkillInfo,
 } from "./api";
 
-type Tab = "prompt" | "skills" | "agents" | "commands" | "mcp" | "plugins" | "memory";
+export type Tab = "prompt" | "skills" | "agents" | "commands" | "mcp" | "plugins" | "memory";
 type Target = { path: string; title: string; subtitle: string; canDelete: boolean; withDir: boolean } | null;
 /** A read-only item: MCP servers and plugins are configuration this app shows
  *  but does not own — installing a plugin is `/plugin` inside a session, and an
  *  MCP block holds credentials that should not be sitting in a textarea. */
 type Detail = { title: string; subtitle: string; rows: [string, string][] } | null;
 
-const TABS: [Tab, string][] = [
-  ["prompt", "CLAUDE.md"], ["skills", "Skills"], ["agents", "Agents"], ["commands", "Lệnh"],
-  ["mcp", "MCP"], ["plugins", "Plugin"], ["memory", "Memory"],
+/** Tab, tên, và một dòng nói tab đó là gì — sidebar dùng cả ba, nên nó nằm
+ *  đây cạnh phần vẽ ra nội dung. */
+export const TABS: { id: Tab; name: string; note: string }[] = [
+  { id: "prompt", name: "CLAUDE.md", note: "Instructions Claude reads every session" },
+  { id: "skills", name: "Skills", note: "Skills Claude loads when it needs them" },
+  { id: "agents", name: "Subagents", note: "Helper agents for specialised work" },
+  { id: "commands", name: "Slash commands", note: "Commands you define yourself" },
+  { id: "mcp", name: "MCP", note: "External tool servers" },
+  { id: "plugins", name: "Plugins", note: "Packages installed from a marketplace" },
+  { id: "memory", name: "Memory", note: "What Claude remembers between sessions" },
 ];
 
-const stamp = (ms: number) => (ms > 0 ? `${ago(ms)} trước` : "—");
+const stamp = (ms: number) => (ms > 0 ? `${ago(ms)} ago` : "—");
 
 /** Everything that shapes how Claude behaves in this folder, in one place:
  *  the root prompt, the skills, subagents, slash commands, MCP servers and
  *  plugins it can reach, and what it remembers. */
-export default function WorkspaceView({ workspace, name, runtime }: { workspace: string; name: string; runtime: string }) {
-  const [tab, setTab] = useState<Tab>("prompt");
+export default function WorkspaceView({ workspace, name, runtime, tab }: {
+  workspace: string; name: string; runtime: string; tab: Tab;
+}) {
   const [docs, setDocs] = useState<Doc[]>([]);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [agents, setAgents] = useState<SkillInfo[]>([]);
@@ -57,6 +65,9 @@ export default function WorkspaceView({ workspace, name, runtime }: { workspace:
   }, [workspace, runtime]);
 
   useEffect(() => { setTarget(null); setDetail(null); setText(""); setSaved(""); setError(""); refresh(); }, [refresh]);
+  // Chuyển mục ở sidebar thì bỏ chọn theo — không thì trình soạn còn giữ tệp
+  // của mục cũ trong khi danh sách bên trái đã là mục khác.
+  useEffect(() => { setTarget(null); setDetail(null); setConfirmDelete(false); }, [tab]);
 
   const open = async (t: NonNullable<Target>, exists = true) => {
     setError(""); setConfirmDelete(false); setDetail(null); setTarget(t);
@@ -104,7 +115,7 @@ export default function WorkspaceView({ workspace, name, runtime }: { workspace:
               withDir: s.extraFiles > 0 || s.path.endsWith("/SKILL.md"),
             })}>
       <span className="t">{s.name} <em>{s.scope}</em></span>
-      <span className="d">{s.description || "(không có mô tả)"}</span>
+      <span className="d">{s.description || "(no description)"}</span>
       <span className="m">
         {fmtBytes(s.bytes)}
         {meta ? ` · ${meta}` : ""}
@@ -113,23 +124,15 @@ export default function WorkspaceView({ workspace, name, runtime }: { workspace:
     </button>
   );
 
-  if (!workspace) return <div className="hint">Chọn một workspace bên trái.</div>;
+  if (!workspace) return <div className="hint">Pick a workspace on the left.</div>;
 
   return (
     <>
       <div className="toolbar">
-        <span className="title">{name}</span>
-        <span className="path">{shortPath(workspace)}</span>
+        <span className="title">{TABS.find((t) => t.id === tab)!.name}{count[tab] ? ` · ${count[tab]}` : ""}</span>
+        <span className="path">{TABS.find((t) => t.id === tab)!.note} — {name}</span>
         <span className="sp" />
-        <div className="seg">
-          {TABS.map(([k, l]) => (
-            <button key={k} className={tab === k ? "on" : ""}
-                    onClick={() => { setTab(k); setTarget(null); setDetail(null); }}>
-              {l}{count[k] ? ` ${count[k]}` : ""}
-            </button>
-          ))}
-        </div>
-        <button className="btn" onClick={refresh}>Tải lại</button>
+        <button className="btn" onClick={refresh}>Reload</button>
       </div>
 
       {error && <div className="banner err"><span>{error}</span></div>}
@@ -139,35 +142,35 @@ export default function WorkspaceView({ workspace, name, runtime }: { workspace:
           {tab === "prompt" && docs.map((d) => (
             <button key={d.path} className={"item" + (target?.path === d.path ? " on" : "")}
                     onClick={() => open({ path: d.path, title: d.scope, subtitle: d.path, canDelete: d.exists, withDir: false }, d.exists)}>
-              <span className="t">{d.scope}{d.exists ? "" : " · chưa có"}</span>
+              <span className="t">{d.scope}{d.exists ? "" : " · not created"}</span>
               <span className="d">{d.note}</span>
-              <span className="m">{d.exists ? `${fmtBytes(d.bytes)} · ${stamp(d.updatedAtMs)}` : "bấm để tạo"}</span>
+              <span className="m">{d.exists ? `${fmtBytes(d.bytes)} · ${stamp(d.updatedAtMs)}` : "click to create"}</span>
             </button>
           ))}
 
           {tab === "skills" && skills.length === 0 && (
-            <div className="hint">Workspace này chưa có skill nào.<br />Skill nằm ở <code>.claude/skills/</code>.</div>
+            <div className="hint">This workspace has no skills yet.<br />Skills live in <code>.claude/skills/</code>.</div>
           )}
-          {tab === "skills" && skills.map((s) => mdRow(s, s.extraFiles > 0 ? `+${s.extraFiles} tệp kèm` : ""))}
+          {tab === "skills" && skills.map((s) => mdRow(s, s.extraFiles > 0 ? `+${s.extraFiles} bundled files` : ""))}
 
           {tab === "agents" && agents.length === 0 && (
             <div className="hint">
-              Chưa có subagent nào.<br />
-              Agent nằm ở <code>.claude/agents/</code> của workspace hoặc <code>~/.claude/agents/</code>.
+              No subagents yet.<br />
+              They live in the workspace's <code>.claude/agents/</code> or in <code>~/.claude/agents/</code>.
             </div>
           )}
           {tab === "agents" && agents.map((a) => mdRow(a, a.meta))}
 
           {tab === "commands" && commands.length === 0 && (
             <div className="hint">
-              Chưa có lệnh gạch chéo nào.<br />
-              Lệnh nằm ở <code>.claude/commands/</code>; thư mục con thành namespace <code>/thư-mục:lệnh</code>.
+              No slash commands yet.<br />
+              They live in <code>.claude/commands/</code>; a subfolder becomes a namespace, <code>/folder:command</code>.
             </div>
           )}
           {tab === "commands" && commands.map((c) => mdRow(c, c.meta))}
 
           {tab === "mcp" && mcp.length === 0 && (
-            <div className="hint">Không có MCP server nào áp cho workspace này.</div>
+            <div className="hint">No MCP server applies to this workspace.</div>
           )}
           {tab === "mcp" && mcp.map((s) => (
             <button key={s.scope + s.name} className={"item" + (detail?.title === s.name ? " on" : "")}
@@ -175,22 +178,22 @@ export default function WorkspaceView({ workspace, name, runtime }: { workspace:
                       title: s.name,
                       subtitle: s.source,
                       rows: [
-                        ["Phạm vi", s.scope],
-                        ["Giao thức", s.transport],
-                        [s.transport === "stdio" ? "Lệnh" : "URL", s.target],
-                        ["Tham số", s.args.join("\n") || "—"],
-                        ["Biến môi trường", s.envKeys.join(", ") || "—"],
-                        ["Khai báo trong", s.source],
+                        ["Scope", s.scope],
+                        ["Transport", s.transport],
+                        [s.transport === "stdio" ? "Command" : "URL", s.target],
+                        ["Arguments", s.args.join("\n") || "—"],
+                        ["Environment", s.envKeys.join(", ") || "—"],
+                        ["Declared in", s.source],
                       ],
                     })}>
               <span className="t">{s.name} <em>{s.transport}</em></span>
               <span className="d">{s.target}</span>
-              <span className="m">{s.scope}{s.envKeys.length ? ` · ${s.envKeys.length} biến môi trường` : ""}</span>
+              <span className="m">{s.scope}{s.envKeys.length ? ` · ${s.envKeys.length} env vars` : ""}</span>
             </button>
           ))}
 
           {tab === "plugins" && plugins.plugins.length === 0 && plugins.marketplaces.length === 0 && (
-            <div className="hint">Chưa cài plugin nào. Cài bằng <code>/plugin</code> trong một phiên Claude Code.</div>
+            <div className="hint">No plugins installed. Install them with <code>/plugin</code> inside a Claude Code session.</div>
           )}
           {tab === "plugins" && plugins.plugins.map((p) => (
             <button key={p.installPath} className={"item" + (detail?.title === p.name ? " on" : "")}
@@ -199,17 +202,17 @@ export default function WorkspaceView({ workspace, name, runtime }: { workspace:
                       subtitle: p.installPath,
                       rows: [
                         ["Marketplace", p.marketplace || "—"],
-                        ["Phiên bản", p.version || "—"],
-                        ["Phạm vi", p.scope || "—"],
-                        ["Gồm", p.parts.join(" · ") || "—"],
-                        ["Cài lúc", stamp(p.installedAtMs)],
-                        ["Cập nhật", stamp(p.updatedAtMs)],
-                        ["Thư mục", p.installPath],
+                        ["Version", p.version || "—"],
+                        ["Scope", p.scope || "—"],
+                        ["Contains", p.parts.join(" · ") || "—"],
+                        ["Installed", stamp(p.installedAtMs)],
+                        ["Updated", stamp(p.updatedAtMs)],
+                        ["Folder", p.installPath],
                       ],
                     })}>
               <span className="t">{p.name} <em>{p.marketplace}</em></span>
-              <span className="d">{p.description || "(không có mô tả)"}</span>
-              <span className="m">{p.parts.join(" · ") || "không rõ nội dung"} · {stamp(p.updatedAtMs)}</span>
+              <span className="d">{p.description || "(no description)"}</span>
+              <span className="m">{p.parts.join(" · ") || "contents unknown"} · {stamp(p.updatedAtMs)}</span>
             </button>
           ))}
           {tab === "plugins" && plugins.marketplaces.map((m) => (
@@ -217,25 +220,25 @@ export default function WorkspaceView({ workspace, name, runtime }: { workspace:
                     onClick={() => show({
                       title: m.name,
                       subtitle: m.path,
-                      rows: [["Nguồn", m.source || "—"], ["Thư mục", m.path], ["Cập nhật", stamp(m.updatedAtMs)]],
+                      rows: [["Source", m.source || "—"], ["Folder", m.path], ["Updated", stamp(m.updatedAtMs)]],
                     })}>
               <span className="t">{m.name} <em>marketplace</em></span>
-              <span className="d">{m.source || "(không rõ nguồn)"}</span>
-              <span className="m">cập nhật {stamp(m.updatedAtMs)}</span>
+              <span className="d">{m.source || "(source unknown)"}</span>
+              <span className="m">updated {stamp(m.updatedAtMs)}</span>
             </button>
           ))}
 
           {tab === "memory" && memories.length === 0 && (
             <div className="hint">
-              Chưa có ghi nhớ nào cho workspace này.<br />
-              Claude ghi vào <code>~/.claude/projects/…/memory/</code> khi bạn bảo nó nhớ một thói quen hay ràng buộc.
+              No memories for this workspace yet.<br />
+              Claude writes to <code>~/.claude/projects/…/memory/</code> when you ask it to remember a habit or a constraint.
             </div>
           )}
           {tab === "memory" && memories.map((m) => (
             <button key={m.path} className={"item" + (target?.path === m.path ? " on" : "")}
                     onClick={() => open({ path: m.path, title: m.name, subtitle: m.path, canDelete: !m.isIndex, withDir: false })}>
               <span className="t">{m.name} {m.kind && <em>{m.kind}</em>}</span>
-              <span className="d">{m.description || "(không có mô tả)"}</span>
+              <span className="d">{m.description || "(no description)"}</span>
               <span className="m">{fmtBytes(m.bytes)} · {stamp(m.updatedAtMs)}</span>
             </button>
           ))}
@@ -248,7 +251,7 @@ export default function WorkspaceView({ workspace, name, runtime }: { workspace:
                 <b>{detail.title}</b>
                 <span className="path">{shortPath(detail.subtitle)}</span>
                 <span className="sp" />
-                <span className="hint" style={{ padding: 0, fontSize: 11 }}>chỉ đọc</span>
+                <span className="hint" style={{ padding: 0, fontSize: 11 }}>read-only</span>
               </div>
               <div className="scroll">
                 <dl className="facts">
@@ -257,14 +260,14 @@ export default function WorkspaceView({ workspace, name, runtime }: { workspace:
                   ))}
                 </dl>
                 <p className="note">
-                  Giá trị biến môi trường và mật khẩu trong URL không bao giờ được hiển thị — chúng ở lại
-                  trong tệp cấu hình. Sửa MCP hay cài plugin thì làm trong phiên Claude Code
+                  Environment values and passwords inside URLs are never shown — they stay in the
+                  config file. Edit MCP servers or install plugins from inside a Claude Code session
                   (<code>/mcp</code>, <code>/plugin</code>).
                 </p>
               </div>
             </>
           ) : !target ? (
-            <div className="empty-main"><p>Chọn một mục bên trái để xem và sửa.</p></div>
+            <div className="empty-main"><p>Pick an item on the left to view and edit it.</p></div>
           ) : (
             <>
               <div className="ed-head">
@@ -274,20 +277,20 @@ export default function WorkspaceView({ workspace, name, runtime }: { workspace:
                 {target.canDelete &&
                   (confirmDelete ? (
                     <>
-                      <span style={{ color: "var(--danger)", fontSize: 12 }}>Xoá hẳn?</span>
-                      <button className="btn danger" onClick={remove} disabled={busy}>Xoá thật</button>
-                      <button className="btn ghost" onClick={() => setConfirmDelete(false)}>Huỷ</button>
+                      <span style={{ color: "var(--danger)", fontSize: 12 }}>Delete for good?</span>
+                      <button className="btn danger" onClick={remove} disabled={busy}>Delete</button>
+                      <button className="btn ghost" onClick={() => setConfirmDelete(false)}>Cancel</button>
                     </>
                   ) : (
-                    <button className="btn ghost danger-text" onClick={() => setConfirmDelete(true)}>Xoá</button>
+                    <button className="btn ghost danger-text" onClick={() => setConfirmDelete(true)}>Delete</button>
                   ))}
-                <button className="btn ghost" onClick={() => setText(saved)} disabled={!dirty}>Hoàn tác</button>
+                <button className="btn ghost" onClick={() => setText(saved)} disabled={!dirty}>Revert</button>
                 <button className="btn primary" onClick={save} disabled={!dirty || busy}>
-                  {busy ? "Đang lưu…" : dirty ? "Lưu" : "Đã lưu"}
+                  {busy ? "Saving…" : dirty ? "Save" : "Saved"}
                 </button>
               </div>
               <textarea className="ed" spellCheck={false} value={text} onChange={(e) => setText(e.target.value)}
-                        placeholder="Tệp trống — gõ nội dung rồi bấm Lưu để tạo." />
+                        placeholder="Empty file — type something and press Save to create it." />
             </>
           )}
         </div>

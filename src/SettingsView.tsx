@@ -13,41 +13,42 @@ export default function SettingsView({
   return (
     <>
       <div className="toolbar">
-        <span className="title">Cài đặt</span>
-        <span className="path">giao diện áp cho cả vỏ ứng dụng lẫn terminal</span>
+        <span className="title">Settings</span>
+        <span className="path">themes apply to the app shell and the terminals alike</span>
       </div>
       <div className="scroll">
         <div className="usage">
           <div className="card">
-            <h3>Phiên làm việc</h3>
-            <div className="sub">áp dụng cho lần mở app kế tiếp</div>
+            <h3>Sessions</h3>
+            <div className="sub">takes effect the next time you open the app</div>
             <label className="opt">
               <input type="checkbox" checked={restore} onChange={(e) => onRestore(e.target.checked)} />
               <span>
-                <b>Khôi phục phiên Claude khi mở lại</b>
+                <b>Restore Claude sessions on launch</b>
                 <i>
-                  Mỗi pane nhớ phiên Claude đang chạy và tự <code>claude --resume</code> khi mở app.
-                  Tiến trình cũ không sống sót qua lần đóng app — cái khôi phục được là phiên trò chuyện,
-                  không phải nội dung terminal.
+                  Each terminal remembers the Claude session it was running and re-opens it with
+                  <code>claude --resume</code>. The old process does not survive a quit — what comes
+                  back is the conversation, not the terminal's contents.
                 </i>
               </span>
             </label>
             <label className="opt">
               <input type="checkbox" checked={notify} onChange={(e) => onNotify(e.target.checked)} />
               <span>
-                <b>Thông báo hệ thống khi agent cần bạn</b>
+                <b>Notify me when an agent needs me</b>
                 <i>
-                  Bắn thông báo và nháy thanh tác vụ khi một pane chuyển sang <b>chờ duyệt</b> hoặc
-                  <b> xong</b>, và chỉ khi cửa sổ Agentspace <b>không</b> đang được focus — lúc bạn đang
-                  nhìn thẳng vào nó thì chip trên pane và hộp thư dưới chân đã nói rồi.
+                  Sends a system notification and flashes the taskbar when a terminal turns
+                  <b>waiting for you</b> or <b>done</b> — but only while the Agentspace window is
+                  <b>not</b> focused. When you are looking straight at it, the status chip and the
+                  inbox already say so.
                 </i>
               </span>
             </label>
           </div>
           {groups.map((g) => (
             <div className="card" key={g}>
-              <h3>Giao diện · {g}</h3>
-              <div className="sub">{THEMES.filter((t) => t.group === g).length} bộ màu</div>
+              <h3>Theme · {g}</h3>
+              <div className="sub">{THEMES.filter((t) => t.group === g).length} palettes</div>
               <div className="themes">
                 {THEMES.filter((t) => t.group === g).map((t) => (
                   <ThemeCard key={t.id} theme={t} on={t.id === current} onPick={() => onPick(t.id)} />

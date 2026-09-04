@@ -115,7 +115,7 @@ export const api = {
 export const fmtUsd = (n: number) => (n >= 100 ? `$${n.toFixed(0)}` : n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(3)}`);
 export const fmtBytes = (n: number) =>
   n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`;
-export const fmtInt = (n: number) => new Intl.NumberFormat("vi-VN").format(Math.round(n));
+export const fmtInt = (n: number) => new Intl.NumberFormat("en-US").format(Math.round(n));
 export const fmtTokens = (n: number) =>
   n >= 1e9 ? `${(n / 1e9).toFixed(1)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);
 export const fmtDur = (msIn: number) => {
@@ -130,27 +130,27 @@ export const fmtDur = (msIn: number) => {
  *  tokens, just cheap ones. */
 export const blockTokens = (b: Block) => b.input + b.output + b.cacheCreate + b.cacheRead;
 
-/** "2h13" — time left, or "hết hạn" once the window has closed. */
+/** "2h13" — time left, or "closed" once the window has gone. */
 export const until = (ms: number) => {
   const d = ms - Date.now();
-  if (d <= 0) return "đã đóng";
+  if (d <= 0) return "closed";
   const m = Math.floor(d / 60_000);
-  if (m < 60) return `${m} phút`;
-  // Mốc reset tuần cách vài ngày: "43h20" bắt người đọc tự chia.
-  if (m >= 1440) return `${Math.floor(m / 1440)} ngày ${Math.floor((m % 1440) / 60)}h`;
+  if (m < 60) return `${m} min`;
+  // A weekly reset can be days out: "43h20" makes the reader do the division.
+  if (m >= 1440) return `${Math.floor(m / 1440)}d ${Math.floor((m % 1440) / 60)}h`;
   return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}`;
 };
 
 export const clock = (ms: number) =>
-  new Date(ms).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
+  new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 
 export const ago = (ms: number) => {
   const d = Date.now() - ms;
-  if (d < 60_000) return "vừa xong";
-  if (d < 3_600_000) return `${Math.floor(d / 60_000)} phút`;
-  if (d < 86_400_000) return `${Math.floor(d / 3_600_000)} giờ`;
+  if (d < 60_000) return "just now";
+  if (d < 3_600_000) return `${Math.floor(d / 60_000)}m`;
+  if (d < 86_400_000) return `${Math.floor(d / 3_600_000)}h`;
   const days = Math.floor(d / 86_400_000);
-  return days < 30 ? `${days} ngày` : `${Math.floor(days / 30)} tháng`;
+  return days < 30 ? `${days}d` : `${Math.floor(days / 30)}mo`;
 };
 export const shortPath = (p: string) =>
   normPath(p).replace(/^\/home\/[^/]+/, "~").replace(/^\/Users\/[^/]+/, "~");

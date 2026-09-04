@@ -4,15 +4,15 @@ import {
   type Block, type Limit, type Named, type UsageReport,
 } from "./api";
 
-const RANGES: [string, string][] = [["today", "Hôm nay"], ["7d", "7 ngày"], ["30d", "30 ngày"], ["all", "Tất cả"]];
+const RANGES: [string, string][] = [["today", "Today"], ["7d", "7 days"], ["30d", "30 days"], ["all", "All time"]];
 /* Slots 1–3 of the validated categorical palette; a 4th model folds into one
    neutral rather than cycling the palette. */
 const SERIES = ["var(--series-1)", "var(--series-2)", "var(--series-3)"];
 
 type Metric = "output" | "cost";
 const METRIC: Record<Metric, { label: string; fmt: (n: number) => string; unit: string }> = {
-  output: { label: "Token ra", fmt: fmtTokens, unit: "token ra" },
-  cost: { label: "Chi phí", fmt: fmtUsd, unit: "chi phí" },
+  output: { label: "Output tokens", fmt: fmtTokens, unit: "output tokens" },
+  cost: { label: "Cost", fmt: fmtUsd, unit: "cost" },
 };
 
 const dayLabel = (d: string) => d.slice(8) + "/" + d.slice(5, 7);
@@ -73,11 +73,11 @@ export default function UsageView({ runtime }: { runtime: string }) {
   return (
     <>
       <div className="toolbar">
-        <span className="title">Mức sử dụng</span>
-        <span className="path">đọc từ ~/.claude/projects{at ? ` · cập nhật ${clock(at)}` : ""}</span>
+        <span className="title">Usage</span>
+        <span className="path">read from ~/.claude/projects{at ? ` · updated ${clock(at)}` : ""}</span>
         <span className="sp" />
         <button className="btn" onClick={() => setForce((n) => n + 1)} disabled={busy}>
-          {busy ? "Đang đọc…" : "Làm mới"}
+          {busy ? "Reading…" : "Refresh"}
         </button>
         <div className="seg">
           {RANGES.map(([k, l]) => (
@@ -89,34 +89,35 @@ export default function UsageView({ runtime }: { runtime: string }) {
       <div className="scroll">
         <div className="usage">
           {busy && !rep ? (
-            <div className="hint">Đang quét transcript…</div>
+            <div className="hint">Scanning transcripts…</div>
           ) : !t || t.sessions === 0 ? (
-            <div className="hint">Chưa có phiên nào trong khoảng này.</div>
+            <div className="hint">No sessions in this range.</div>
           ) : (
             <>
               <BlockCard blocks={blocks} runtime={runtime} force={force} />
 
               <div className="tiles">
-                <Tile k="Token ra" v={fmtTokens(t.output)} s={`${fmtInt(t.sessions)} phiên`} />
-                <Tile k="Token vào" v={fmtTokens(t.input + t.cacheCreate)} s={`cache đọc ${fmtTokens(t.cacheRead)}`} />
-                <Tile k="Tin nhắn" v={fmtInt(t.messages)} s={`${fmtInt(Math.round(t.messages / Math.max(t.sessions, 1)))} / phiên`} />
-                <Tile k="Dòng code" v={`+${fmtInt(t.linesAdded)}`} s={`−${fmtInt(t.linesRemoved)}`} />
-                <Tile k="Thời gian" v={fmtDur(t.durationMs)} s="tổng phiên" />
+                <Tile k="Output tokens" v={fmtTokens(t.output)} s={`${fmtInt(t.sessions)} sessions`} />
+                <Tile k="Input tokens" v={fmtTokens(t.input + t.cacheCreate)} s={`${fmtTokens(t.cacheRead)} cache read`} />
+                <Tile k="Messages" v={fmtInt(t.messages)} s={`${fmtInt(Math.round(t.messages / Math.max(t.sessions, 1)))} / session`} />
+                <Tile k="Lines of code" v={`+${fmtInt(t.linesAdded)}`} s={`−${fmtInt(t.linesRemoved)}`} />
+                <Tile k="Time" v={fmtDur(t.durationMs)} s="across all sessions" />
                 <Tile
-                  k="Chi phí"
+                  k="Cost"
                   v={fmtUsd(t.costUsd)}
                   s={
                     t.costSessions < t.sessions
-                      ? `chỉ ${t.costSessions}/${t.sessions} phiên có ghi`
-                      : "đủ mọi phiên"
+                      ? `only ${t.costSessions}/${t.sessions} sessions recorded`
+                      : "every session recorded"
                   }
                 />
               </div>
 
               {t.costSessions < t.sessions && (
                 <p className="note">
-                  Claude Code chỉ ghi bản ghi <code>cost-state</code> cho một phần phiên, nên con số đô-la là
-                  giới hạn dưới. Token được cộng từ từng message nên luôn đầy đủ — hãy đọc token trước.
+                  Claude Code only writes a <code>cost-state</code> record for some sessions, so the
+                  dollar figure is a lower bound. Tokens are summed per message and are always complete —
+                  read the token numbers first.
                 </p>
               )}
 
@@ -124,8 +125,8 @@ export default function UsageView({ runtime }: { runtime: string }) {
                 <div className="card">
                   <div className="cardhead">
                     <div>
-                      <h3>{m.label} theo ngày</h3>
-                      <div className="sub">{days.length} ngày gần nhất · cao nhất {m.fmt(peak)}</div>
+                      <h3>{m.label} per day</h3>
+                      <div className="sub">last {days.length} days · peak {m.fmt(peak)}</div>
                     </div>
                     <div className="seg">
                       {(["output", "cost"] as Metric[]).map((k) => (
@@ -145,7 +146,7 @@ export default function UsageView({ runtime }: { runtime: string }) {
                           <i style={{ height: `${Math.max((v / peak) * 100, v > 0 ? 2 : 0)}%` }} />
                           <span className="tip">
                             <b>{m.fmt(v)}</b>
-                            {dayLabel(d.key)} · {d.sessions} phiên
+                            {dayLabel(d.key)} · {d.sessions} sessions
                           </span>
                         </div>
                       );
@@ -159,29 +160,29 @@ export default function UsageView({ runtime }: { runtime: string }) {
               )}
 
               <div className="card">
-                <h3>Theo model</h3>
-                <div className="sub">{m.label.toLowerCase()} của từng model</div>
+                <h3>By model</h3>
+                <div className="sub">{m.label.toLowerCase()} per model</div>
                 <Bars
                   rows={(rep!.byModel ?? []).filter((x) => value(x) > 0).map((x, i) => ({
                     key: x.key.replace(/^claude-/, ""),
                     value: value(x),
                     text: m.fmt(value(x)),
                     color: SERIES[i] ?? "var(--series-other)",
-                    note: `${fmtTokens(x.input + x.cacheCreate)} vào · ${fmtTokens(x.output)} ra · ${fmtUsd(x.costUsd)}`,
+                    note: `${fmtTokens(x.input + x.cacheCreate)} in · ${fmtTokens(x.output)} out · ${fmtUsd(x.costUsd)}`,
                   }))}
                 />
               </div>
 
               <div className="card">
-                <h3>Theo workspace</h3>
-                <div className="sub">10 thư mục dùng nhiều nhất</div>
+                <h3>By workspace</h3>
+                <div className="sub">10 busiest folders</div>
                 <Bars
                   rows={(rep!.byWorkspace ?? []).filter((w) => value(w) > 0).slice(0, 10).map((w) => ({
                     key: shortPath(w.key).split("/").slice(-2).join("/"),
                     value: value(w),
                     text: m.fmt(value(w)),
                     color: "var(--accent)",
-                    note: `${w.sessions} phiên · ${fmtTokens(w.output)} token ra · +${fmtInt(w.linesAdded)}/−${fmtInt(w.linesRemoved)}`,
+                    note: `${w.sessions} sessions · ${fmtTokens(w.output)} out · +${fmtInt(w.linesAdded)}/−${fmtInt(w.linesRemoved)}`,
                   }))}
                 />
               </div>
@@ -203,18 +204,18 @@ export default function UsageView({ runtime }: { runtime: string }) {
  *  *your own* busiest window instead of an invented ceiling — "gấp rưỡi lần
  *  nặng nhất từ trước tới nay" is a real warning; "83% of 200k" would be a
  *  number we made up. */
-/** Nhãn `/usage` sang tiếng Việt. Dòng theo model ("Current week (Fable)")
- *  giữ nguyên tên model vì Anthropic đếm riêng cho từng model. */
+/** `/usage` labels, shortened. The per-model row ("Current week (Fable)")
+ *  keeps the model name — Anthropic meters each model separately. */
 const limitLabel = (s: string) =>
   s === "Current session"
-    ? "Phiên 5 giờ"
-    : s.replace("Current week (all models)", "Tuần · mọi model").replace(/^Current week \((.+)\)$/, "Tuần · $1");
+    ? "5-hour session"
+    : s.replace("Current week (all models)", "Week · all models").replace(/^Current week \((.+)\)$/, "Week · $1");
 
 /** Giờ trong ngày; mốc sang ngày khác thì kèm ngày, không thì đọc nhầm. */
 const when = (ms: number) =>
   new Date(ms).toDateString() === new Date().toDateString()
     ? clock(ms)
-    : `${new Date(ms).toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit" })} ${clock(ms)}`;
+    : `${new Date(ms).toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit" })} ${clock(ms)}`;
 
 function LimitRow({ l }: { l: Limit }) {
   return (
@@ -225,7 +226,7 @@ function LimitRow({ l }: { l: Limit }) {
         <i style={{ width: l.pct ? `${Math.max(l.pct, 1.5)}%` : 0 }} className={l.pct >= 90 ? "over" : ""} />
       </span>
       <span className="v">{l.pct}%</span>
-      <span className="s">{l.resetMs ? `reset ${when(l.resetMs)} · còn ${until(l.resetMs)}` : ""}</span>
+      <span className="s">{l.resetMs ? `resets ${when(l.resetMs)} · ${until(l.resetMs)} left` : ""}</span>
     </div>
   );
 }
@@ -289,21 +290,23 @@ function BlockCard({ blocks, runtime, force }: { blocks: Block[]; runtime: strin
     <div className="card">
       <div className="cardhead">
         <div>
-          <h3>{open ? "Cửa sổ 5 giờ đang mở" : "Cửa sổ 5 giờ gần nhất"}</h3>
+          <h3>{open ? "Current 5-hour window" : "Last 5-hour window"}</h3>
           <div className="sub">
             {waiting ? (
-              "đang hỏi hạn mức thật từ /usage…"
+              "asking /usage for your real limits…"
             ) : (
               <>
-                mở {clock(startMs)} · đóng {clock(endMs)}
-                {open ? ` · còn ${until(endMs)}` : " · đã đóng"}
-                {session ? " · theo /usage" : " · ước từ transcript máy này"}
+                opened {clock(startMs)} · closes {clock(endMs)}
+                {open ? ` · ${until(endMs)} left` : " · closed"}
+                {session
+                  ? " · from /usage"
+                  : " · estimated from transcripts — /usage unavailable"}
               </>
             )}
           </div>
         </div>
         <div className="blk-now">
-          <b>{fmtTokens(used)}</b> token (gồm cache đọc)
+          <b>{fmtTokens(used)}</b> tokens (cache reads included)
           {last.costUsd > 0 && <span> · ~{fmtUsd(last.costUsd)}</span>}
         </div>
       </div>
@@ -329,20 +332,20 @@ function BlockCard({ blocks, runtime, force }: { blocks: Block[]; runtime: strin
       ) : (
         // CLI không trả lời được: quay về thước đo tương đối, và nói rõ là ước.
         <>
-          <div className="gauge" title={`${fmtInt(used)} token — cao nhất từ trước: ${fmtInt(peak)}`}>
+          <div className="gauge" title={`${fmtInt(used)} tokens — your all-time peak: ${fmtInt(peak)}`}>
             <i style={{ width: `${Math.max(pct, 1.5)}%` }} className={used > peak ? "over" : ""} />
           </div>
           <div className="sub">
             {used >= peak
-              ? "nặng nhất từ trước tới nay"
-              : `${Math.round(pct)}% so với cửa sổ nặng nhất của bạn (${fmtTokens(peak)})`}
+              ? "your heaviest window so far"
+              : `${Math.round(pct)}% of your heaviest window (${fmtTokens(peak)})`}
           </div>
         </>
       )}
 
       <div className="sub">
-        {live && `${fmtInt(Math.round(burn))} token/phút · hết cửa sổ ước ${fmtTokens(Math.round(projected))} · `}
-        {`${fmtInt(last.messages)} tin nhắn · ${fmtTokens(last.output)} token ra`}
+        {live && `${fmtInt(Math.round(burn))} tokens/min · ${fmtTokens(Math.round(projected))} projected by close · `}
+        {`${fmtInt(last.messages)} messages · ${fmtTokens(last.output)} output tokens`}
       </div>
 
       {blocks.length > 1 && (
@@ -355,13 +358,13 @@ function BlockCard({ blocks, runtime, force }: { blocks: Block[]; runtime: strin
                   <i style={{ height: `${Math.max((v / Math.max(peak, used)) * 100, 2)}%` }} />
                   <span className="tip">
                     <b>{fmtTokens(v)}</b>
-                    {new Date(b.startMs).toLocaleString("vi-VN", { day: "2-digit", month: "2-digit" })} {clock(b.startMs)}
+                    {new Date(b.startMs).toLocaleString("en-GB", { day: "2-digit", month: "2-digit" })} {clock(b.startMs)}
                   </span>
                 </div>
               );
             })}
           </div>
-          <div className="axis"><span>16 cửa sổ gần nhất</span><span>mỗi cột = 5 giờ có làm việc</span></div>
+          <div className="axis"><span>last 16 windows</span><span>one bar = one 5-hour window</span></div>
         </>
       )}
     </div>
@@ -374,7 +377,7 @@ function Tile({ k, v, s }: { k: string; v: string; s?: string }) {
 
 function Bars({ rows }: { rows: { key: string; value: number; text: string; color: string; note: string }[] }) {
   const max = Math.max(...rows.map((r) => r.value), 1);
-  if (!rows.length) return <div className="hint">Không có dữ liệu.</div>;
+  if (!rows.length) return <div className="hint">No data.</div>;
   return (
     <div className="hbars">
       {rows.map((r) => (

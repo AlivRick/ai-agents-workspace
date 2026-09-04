@@ -121,7 +121,7 @@ export default function Pane({
         unlisteners.push(
           await listen(`pty-exit:${id}`, () => {
             setDead(true);
-            term.write("\r\n\x1b[2m— phiên đã kết thúc —\x1b[0m\r\n");
+            term.write("\r\n\x1b[2m— session ended —\x1b[0m\r\n");
           }),
         );
         if (disposed) return;
@@ -129,7 +129,7 @@ export default function Pane({
         if (disposed) return;
         onReady(term);
       } catch (e) {
-        term.write(`\r\n\x1b[31mKhông mở được terminal: ${e}\x1b[0m\r\n`);
+        term.write(`\r\n\x1b[31mCould not open terminal: ${e}\x1b[0m\r\n`);
         setDead(true);
       }
     })();
@@ -138,7 +138,12 @@ export default function Pane({
     const ro = new ResizeObserver(() => {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
-        try { fit.fit(); } catch { /* hidden pane */ }
+        // Pane của tác vụ không được mở có kích thước 0×0. Fit vào đó rồi báo
+        // kích thước ấy cho PTY là ép TUI của Claude vẽ lại trong một khung
+        // rỗng — quay lại tác vụ thì màn hình đã mất.
+        const el = host.current;
+        if (!el?.offsetWidth || !el.offsetHeight) return;
+        try { fit.fit(); } catch { return; }
         void api.ptyResize(id, term.cols, term.rows).catch(() => {});
       });
     });
@@ -170,15 +175,15 @@ export default function Pane({
     <>
       {find !== null && (
         <div className="find">
-          <input ref={findBox} value={find} placeholder="Tìm trong pane…" spellCheck={false}
+          <input ref={findBox} value={find} placeholder="Find in terminal…" spellCheck={false}
                  onChange={(e) => { setFind(e.target.value); search.current?.findNext(e.target.value); }}
                  onKeyDown={(e) => {
                    if (e.key === "Enter") step(e.shiftKey);
                    if (e.key === "Escape") close();
                  }} />
-          <button className="btn ghost" title="Kết quả trước (Shift+Enter)" onClick={() => step(true)}>↑</button>
-          <button className="btn ghost" title="Kết quả sau (Enter)" onClick={() => step(false)}>↓</button>
-          <button className="btn ghost" title="Đóng (Esc)" onClick={close}>×</button>
+          <button className="btn ghost" title="Previous match (Shift+Enter)" onClick={() => step(true)}>↑</button>
+          <button className="btn ghost" title="Next match (Enter)" onClick={() => step(false)}>↓</button>
+          <button className="btn ghost" title="Close (Esc)" onClick={close}>×</button>
         </div>
       )}
       {/* Copy on select, the way every terminal emulator behaves. Only on
@@ -195,7 +200,7 @@ export default function Pane({
 }
 
 export function BlockList({ blocks, onJump }: { blocks: Block[]; onJump: (b: Block) => void }) {
-  if (!blocks.length) return <div className="blocks"><div className="empty">Chưa có lệnh nào được ghi nhận.<br />Shell integration đánh dấu từng lệnh khi bạn chạy.</div></div>;
+  if (!blocks.length) return <div className="blocks"><div className="empty">No commands recorded yet.<br />Shell integration marks each command as you run it.</div></div>;
   return (
     <div className="blocks">
       {blocks.map((b) => (

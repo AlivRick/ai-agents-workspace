@@ -182,7 +182,7 @@ fn list_workspaces(app: State<App>) -> Vec<store::Workspace> {
 #[tauri::command]
 fn add_workspace(app: State<App>, path: String) -> Result<Vec<store::Workspace>, String> {
     if !std::path::Path::new(&path).is_dir() {
-        return Err("Đường dẫn không phải thư mục".into());
+        return Err("That path is not a folder".into());
     }
     app.store.lock().unwrap().add(&path);
     app.persist();
@@ -356,7 +356,7 @@ async fn usage_limits(runtime: Option<String>) -> Result<String, String> {
     let r = rt(runtime);
     blocking(move || engine::usage_text(&r))
         .await?
-        .ok_or_else(|| "Không đọc được /usage từ CLI".to_string())
+        .ok_or_else(|| "Could not read /usage from the CLI".to_string())
 }
 
 /// Grep the bodies of every transcript. The metadata search in the UI only

@@ -366,14 +366,14 @@ fn finish(
 
 pub fn write(terms: &Terminals, id: &str, data: &str) -> Result<(), String> {
     let mut map = terms.0.lock().unwrap();
-    let p = map.get_mut(id).ok_or("terminal đã đóng")?;
+    let p = map.get_mut(id).ok_or("terminal is closed")?;
     p.writer.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
     p.writer.flush().map_err(|e| e.to_string())
 }
 
 pub fn resize(terms: &Terminals, id: &str, cols: u16, rows: u16) -> Result<(), String> {
     let map = terms.0.lock().unwrap();
-    let p = map.get(id).ok_or("terminal đã đóng")?;
+    let p = map.get(id).ok_or("terminal is closed")?;
     p.master
         .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| e.to_string())

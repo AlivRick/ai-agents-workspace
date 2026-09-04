@@ -50,17 +50,17 @@ fn allowed_roots(ws: &str, claude_dir: &Path) -> Vec<PathBuf> {
 fn resolve(path: &str, ws: &str, claude_dir: &Path) -> Result<PathBuf, String> {
     let p = lexical(Path::new(path));
     if !p.is_absolute() {
-        return Err("Đường dẫn phải là tuyệt đối".into());
+        return Err("Path must be absolute".into());
     }
     if p.extension().and_then(|x| x.to_str()) != Some("md") {
-        return Err("Chỉ thao tác được trên tệp .md".into());
+        return Err("Only .md files can be edited here".into());
     }
     let roots = allowed_roots(ws, claude_dir);
     if roots.is_empty() {
-        return Err("Không xác định được thư mục cho phép".into());
+        return Err("Could not determine the allowed folder".into());
     }
     if !roots.iter().any(|r| p.starts_with(r)) {
-        return Err(format!("Từ chối thao tác ngoài workspace và ~/.claude: {path}"));
+        return Err(format!("Refused: outside the workspace and ~/.claude: {path}"));
     }
     Ok(p)
 }
@@ -128,11 +128,11 @@ pub struct Doc {
 pub fn claude_docs(ws: &str, claude_dir: &Path) -> Vec<Doc> {
     let root = PathBuf::from(ws);
     let mut out = vec![
-        (root.join("CLAUDE.md"), "Dự án", "Áp cho mọi phiên mở trong thư mục này. Nên commit."),
-        (root.join("CLAUDE.local.md"), "Cá nhân", "Chỉ máy bạn. Thường bị .gitignore."),
-        (root.join(".claude").join("CLAUDE.md"), "Dự án (.claude)", "Vị trí thay thế cho prompt dự án."),
+        (root.join("CLAUDE.md"), "Project", "Applies to every session opened in this folder. Commit it."),
+        (root.join("CLAUDE.local.md"), "Personal", "Your machine only. Usually gitignored."),
+        (root.join(".claude").join("CLAUDE.md"), "Project (.claude)", "Alternative location for the project prompt."),
     ];
-    out.push((claude_dir.join("CLAUDE.md"), "Toàn cục", "Áp cho tất cả dự án trên máy này."));
+    out.push((claude_dir.join("CLAUDE.md"), "Global", "Applies to every project on this machine."));
     out.into_iter()
         .map(|(path, scope, note)| {
             let exists = path.is_file();
@@ -208,7 +208,7 @@ fn read_skill(entry: &Path, scope: &str) -> Option<SkillInfo> {
 pub fn skills(ws: &str, claude_dir: &Path) -> Vec<SkillInfo> {
     let roots: Vec<(PathBuf, &str)> = vec![
         (PathBuf::from(ws).join(".claude").join("skills"), "Workspace"),
-        (claude_dir.join("skills"), "Toàn cục"),
+        (claude_dir.join("skills"), "Global"),
     ];
     let mut out = Vec::new();
     for (dir, scope) in roots {
@@ -265,7 +265,7 @@ pub fn memories(ws: &str, claude_dir: &Path) -> Vec<MemoryInfo> {
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| p.file_stem().unwrap_or_default().to_string_lossy().into_owned()),
                 description: if is_index {
-                    "Mục lục — một dòng cho mỗi ghi nhớ".into()
+                    "Index — one line per memory".into()
                 } else {
                     field(&fm, "description")
                 },
@@ -337,7 +337,7 @@ pub fn agents(ws: &str, claude_dir: &Path) -> Vec<SkillInfo> {
     md_entries(
         &[
             (PathBuf::from(ws).join(".claude").join("agents"), "Workspace"),
-            (claude_dir.join("agents"), "Toàn cục"),
+            (claude_dir.join("agents"), "Global"),
         ],
         0,
         "model",
@@ -351,7 +351,7 @@ pub fn commands(ws: &str, claude_dir: &Path) -> Vec<SkillInfo> {
     md_entries(
         &[
             (PathBuf::from(ws).join(".claude").join("commands"), "Workspace"),
-            (claude_dir.join("commands"), "Toàn cục"),
+            (claude_dir.join("commands"), "Global"),
         ],
         1,
         "argument-hint",
@@ -445,11 +445,11 @@ pub fn mcp_servers(ws: &str, claude_dir: &Path, claude_json: &Path) -> Vec<McpSe
     let root = PathBuf::from(ws);
     let mut out = Vec::new();
     let files: [(PathBuf, &str); 5] = [
-        (root.join(".mcp.json"), "Dự án · .mcp.json"),
-        (root.join(".claude").join("settings.json"), "Dự án · settings"),
-        (root.join(".claude").join("settings.local.json"), "Dự án · settings.local"),
-        (claude_dir.join("settings.json"), "Toàn cục · settings"),
-        (claude_dir.join("settings.local.json"), "Toàn cục · settings.local"),
+        (root.join(".mcp.json"), "Project · .mcp.json"),
+        (root.join(".claude").join("settings.json"), "Project · settings"),
+        (root.join(".claude").join("settings.local.json"), "Project · settings.local"),
+        (claude_dir.join("settings.json"), "Global · settings"),
+        (claude_dir.join("settings.local.json"), "Global · settings.local"),
     ];
     for (path, scope) in &files {
         if let Some(v) = read_json(path) {
@@ -457,11 +457,11 @@ pub fn mcp_servers(ws: &str, claude_dir: &Path, claude_json: &Path) -> Vec<McpSe
         }
     }
     if let Some(v) = read_json(claude_json) {
-        mcp_from(v.get("mcpServers"), "Toàn cục · .claude.json", claude_json, &mut out);
+        mcp_from(v.get("mcpServers"), "Global · .claude.json", claude_json, &mut out);
         // Per-project entries are keyed by the path Claude Code was started in.
         let key = crate::util::norm_path(ws);
         if let Some(p) = v.get("projects").and_then(|p| p.get(&key).or_else(|| p.get(ws))) {
-            mcp_from(p.get("mcpServers"), "Dự án · .claude.json", claude_json, &mut out);
+            mcp_from(p.get("mcpServers"), "Project · .claude.json", claude_json, &mut out);
         }
     }
     out.sort_by(|a, b| (a.name.to_lowercase(), a.scope.clone()).cmp(&(b.name.to_lowercase(), b.scope.clone())));
@@ -505,7 +505,7 @@ pub struct PluginReport {
 fn plugin_parts(dir: &Path) -> Vec<String> {
     let count = |sub: &str| std::fs::read_dir(dir.join(sub)).map(|d| d.flatten().count()).unwrap_or(0);
     let mut parts = Vec::new();
-    for (sub, label) in [("skills", "skill"), ("agents", "agent"), ("commands", "lệnh"), ("hooks", "hook")] {
+    for (sub, label) in [("skills", "skill"), ("agents", "agent"), ("commands", "command"), ("hooks", "hook")] {
         let n = count(sub);
         if n > 0 {
             parts.push(format!("{n} {label}"));
@@ -580,12 +580,12 @@ pub fn plugins(claude_dir: &Path) -> PluginReport {
 
 pub fn read(path: &str, ws: &str, claude_dir: &Path) -> Result<String, String> {
     let p = resolve(path, ws, claude_dir)?;
-    std::fs::read_to_string(&p).map_err(|e| format!("Không đọc được {path}: {e}"))
+    std::fs::read_to_string(&p).map_err(|e| format!("Could not read {path}: {e}"))
 }
 
 pub fn write(path: &str, ws: &str, claude_dir: &Path, content: &str) -> Result<(), String> {
     let p = resolve(path, ws, claude_dir)?;
-    write_atomic(&p, content.as_bytes()).map_err(|e| format!("Không ghi được {path}: {e}"))
+    write_atomic(&p, content.as_bytes()).map_err(|e| format!("Could not write {path}: {e}"))
 }
 
 /// Removes a skill's whole directory when it has one, otherwise the single
@@ -594,10 +594,10 @@ pub fn delete(path: &str, ws: &str, claude_dir: &Path, with_dir: bool) -> Result
     let p = resolve(path, ws, claude_dir)?;
     if with_dir {
         if let Some(dir) = p.parent().filter(|d| d.join("SKILL.md") == p) {
-            return std::fs::remove_dir_all(dir).map_err(|e| format!("Xoá thất bại: {e}"));
+            return std::fs::remove_dir_all(dir).map_err(|e| format!("Delete failed: {e}"));
         }
     }
-    std::fs::remove_file(&p).map_err(|e| format!("Xoá thất bại: {e}"))
+    std::fs::remove_file(&p).map_err(|e| format!("Delete failed: {e}"))
 }
 
 #[cfg(test)]

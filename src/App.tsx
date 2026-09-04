@@ -6,23 +6,29 @@ import { listen } from "@tauri-apps/api/event";
 import type { Terminal } from "@xterm/xterm";
 import Pane, { BlockList, type Block as PaneBlock } from "./Pane";
 import ImportSheet from "./ImportSheet";
-import SessionsView from "./SessionsView";
 import SettingsView from "./SettingsView";
 import UsageView from "./UsageView";
-import WorkspaceView from "./WorkspaceView";
+import WorkspaceView, { TABS as WS_TABS, type Tab as WsTab } from "./WorkspaceView";
+import TaskSheet, { AGENTS, agentName, type Slot, type TaskSpec } from "./TaskSheet";
 import { applyTheme, themeById } from "./themes";
 import { reorder } from "./reorder";
+import { loudest, quote, type Status } from "./task";
 import {
-  ago, api, blockTokens, fmtTokens, fmtUsd, normPath, shortPath, until,
-  type Block, type EngineStatus, type GitInfo, type Runtime, type Session, type Workspace,
+  ago, api, blockTokens, fmtTokens, fmtUsd, shortPath, until,
+  type Block, type EngineStatus, type GitInfo, type Runtime, type Workspace,
 } from "./api";
 
-type View = "code" | "workspace" | "sessions" | "usage" | "settings";
-type Status = "idle" | "run" | "att" | "done";
+type View = "code" | "workspace" | "usage" | "settings";
 /** One entry of the todo list Claude keeps for itself, as TodoWrite writes it. */
 type Todo = { content: string; activeForm?: string; status: string };
+/** A unit of work inside a workspace: a name and the terminals doing it.
+ *  Panes point at it, so the task owns nothing but its identity. */
+type Task = { id: string; wsId: string; name: string };
 type PaneInfo = {
-  id: string; cwd: string; runtime: string; status: Status;
+  id: string; taskId: string; cwd: string; runtime: string; status: Status;
+  /** Which CLI this terminal was opened for — what ▶ re-runs, and why a Codex
+   *  terminal does not pretend to report Claude's hook status. */
+  agent: Slot;
   /** When the pane last changed status — what the inbox sorts and ages by. */
   since: number;
   /** A name you gave the pane. Two panes on one workspace are otherwise
@@ -32,27 +38,29 @@ type PaneInfo = {
 };
 
 const Icon = ({ d }: { d: string }) => (
-  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor"
        strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d={d} /></svg>
 );
 const I: Record<View, string> = {
   code: "M8 9l3 3-3 3M13 15h3M4 4h16v16H4z",
   workspace: "M4 19V6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2zM8 12h8M8 16h5",
-  sessions: "M4 6h16M4 12h16M4 18h10",
   usage: "M4 20V10M10 20V4M16 20v-7M22 20H2",
   settings: "M12 15a3 3 0 100-6 3 3 0 000 6zM19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-2.9 1.2V21a2 2 0 11-4 0v-.1A1.7 1.7 0 007.1 19.7l-.1.1a2 2 0 11-2.8-2.8l.1-.1A1.7 1.7 0 003.1 14H3a2 2 0 110-4h.1A1.7 1.7 0 004.3 7.1l-.1-.1a2 2 0 112.8-2.8l.1.1A1.7 1.7 0 0010 3.1V3a2 2 0 114 0v.1a1.7 1.7 0 002.9 1.2l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 001.2 2.9H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z",
 };
 const VIEW_NAME: Record<View, string> = {
-  code: "Code", workspace: "Nội dung workspace", sessions: "Phiên", usage: "Mức dùng", settings: "Cài đặt",
+  code: "Terminals", workspace: "Claude config", usage: "Usage", settings: "Settings",
 };
 const STATUS: Record<Status, [string, string]> = {
-  idle: ["", "sẵn sàng"], run: ["run", "đang chạy"], att: ["att", "chờ bạn duyệt"], done: ["done", "xong"],
+  idle: ["", "ready"], run: ["run", "working"], att: ["att", "waiting for you"], done: ["done", "done"],
 };
 const PIN = "M9 3h6l-1 6 4 3v2h-5v7l-1 1-1-1v-7H6v-2l4-3z";
-const CHEV = { open: "M15 6l-6 6 6 6", closed: "M9 6l6 6-6 6" };
+/** Nút thu gọn. Cùng một icon ở cả hai trạng thái, đứng yên một chỗ — chevron
+ *  đổi chiều mà logo lại nhảy theo là thứ làm thanh bên trông lệch lúc thu. */
+const BURGER = "M4 7h16M4 12h16M4 17h16";
 
 export default function App() {
   const [view, setView] = useState<View>("code");
+  const [wsTab, setWsTab] = useState<WsTab>("prompt");
   const [engine, setEngine] = useState<EngineStatus | null>(null);
   const [runtimes, setRuntimes] = useState<Runtime[]>([]);
   const [runtime, setRuntime] = useState("host");
@@ -62,6 +70,10 @@ export default function App() {
   const [wsQuery, setWsQuery] = useState("");
   const [sideOpen, setSideOpen] = useState(() => localStorage.getItem("side") !== "0");
   const [importable, setImportable] = useState<string[] | null>(null);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [taskId, setTaskId] = useState<string | null>(null);
+  const [newTaskWs, setNewTaskWs] = useState<Workspace | null>(null);
+  const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
   const [panes, setPanes] = useState<PaneInfo[]>([]);
   const dragPane = useRef<string | null>(null);
   const [overPane, setOverPane] = useState<string | null>(null);
@@ -70,9 +82,6 @@ export default function App() {
   const [showTodos, setShowTodos] = useState<string | null>(null);
   const [zoom, setZoom] = useState<string | null>(null);
   const [naming, setNaming] = useState<{ id: string; value: string } | null>(null);
-  const [broadcast, setBroadcast] = useState("");
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [scanning, setScanning] = useState(false);
   const [today, setToday] = useState({ costUsd: 0, output: 0 });
   const [block, setBlock] = useState<Block | null>(null);
   const [inbox, setInbox] = useState(false);
@@ -91,6 +100,7 @@ export default function App() {
   const theme = themeById(themeId);
   const ws = workspaces.find((w) => w.id === wsId) ?? null;
   const cwd = ws?.path ?? "";
+  const task = tasks.find((t) => t.id === taskId) ?? null;
 
   // ---------------------------------------------------------------- theme
   // Layout effect, not a plain one: the tokens must land before the first
@@ -102,13 +112,16 @@ export default function App() {
     localStorage.setItem("theme", theme.id);
   }, [theme]);
 
-  // Escape closes the import sheet, like every other dialog on the platform.
+  // Escape closes whichever sheet is open, like every other dialog.
   useEffect(() => {
-    if (!importable) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setImportable(null); };
+    if (!importable && !newTaskWs) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setImportable(null); setNewTaskWs(null);
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [importable]);
+  }, [importable, newTaskWs]);
 
   const toggleSide = useCallback(() => {
     setSideOpen((o) => { localStorage.setItem("side", o ? "0" : "1"); return !o; });
@@ -141,16 +154,10 @@ export default function App() {
     }
   }, []);
   // Runtime hiện tại, đọc được từ trong một promise đang bay. Bản quét trả về
-  // muộn của runtime cũ mà ghi đè thì danh sách phiên rỗng lại — đúng triệu
-  // chứng "mở app không thấy phiên, bấm Quét lại mới có".
+  // muộn của runtime cũ mà ghi đè thì số liệu nhảy về của máy sai.
   const rtRef = useRef(runtime);
   rtRef.current = runtime;
-  const loadSessions = useCallback(async () => {
-    setScanning(true);
-    try {
-      const list = await api.scanSessions(runtime);
-      if (rtRef.current === runtime) setSessions(list);
-    } finally { setScanning(false); }
+  const loadUsage = useCallback(() => {
     api.usageReport("today", runtime)
       .then((r) => { if (rtRef.current === runtime) setToday(r.total); })
       .catch(() => {});
@@ -173,18 +180,24 @@ export default function App() {
   }, []);
 
   // Startup order matters for how the window feels: the cheap reads paint the
-  // shell, and the transcript scan — hundreds of megabytes on a busy machine —
-  // starts after the first frame instead of competing with it.
+  // shell, and the usage scan — hundreds of megabytes of transcript on a busy
+  // machine — starts after the first frame instead of competing with it.
   useEffect(() => {
     loadWorkspaces();
     api.getTheme().then((t) => { if (t) setThemeId(t); }).catch(() => {});
     api
       .loadLayout()
       .then(async (l) => {
+        const saved: Task[] = Array.isArray(l?.tasks) ? l.tasks : [];
         if (l?.panes?.length) {
+          // Bản layout cũ không có tác vụ: gom mọi pane đã lưu vào một tác vụ
+          // của workspace đang mở, thay vì để chúng thành pane mồ côi.
+          const legacy = saved.length ? null : { id: `t${Date.now().toString(36)}`, wsId: l.wsId ?? "", name: "Restored task" };
           const list: PaneInfo[] = l.panes.map((p: any) => ({
-            runtime: "host", ...p, status: "idle", since: Date.now(), blocks: [], todos: [],
+            runtime: "host", agent: "claude", taskId: legacy?.id ?? "", ...p,
+            status: "idle", since: Date.now(), blocks: [], todos: [],
           }));
+          if (legacy) saved.push(legacy);
           // Xếp lệnh resume vào hàng đợi *trước* khi pane tồn tại, nên onReady
           // của terminal chắc chắn thấy nó — giải xong sau đó thì đã lỡ.
           if (localStorage.getItem("restore") !== "0")
@@ -196,7 +209,10 @@ export default function App() {
             );
           setPanes(list);
         }
+        setTasks(saved);
         if (l?.wsId) setWsId(l.wsId);
+        if (l?.taskId && saved.some((t) => t.id === l.taskId)) setTaskId(l.taskId);
+        else setTaskId(saved[0]?.id ?? null);
       })
       .finally(() => setLayoutLoaded(true));
     // Deliberately once: a runtime change re-runs the pieces that depend on it
@@ -204,30 +220,33 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Máy nào đang được đọc thì quét máy đó — chạy cả lần đầu, nên không cần
-  // hẹn giờ riêng lúc mount nữa (bản hẹn giờ đó giữ `runtime` cũ trong closure
-  // và quét nhầm host). Vẫn lùi sau khung hình đầu: transcript có thể vài trăm
-  // MB, quét ngay lúc mở làm cửa sổ đứng.
+  // Máy nào đang được đọc thì đọc số của máy đó. Vẫn lùi sau khung hình đầu:
+  // transcript có thể vài trăm MB, quét ngay lúc mở làm cửa sổ đứng.
   useEffect(() => {
     loadEngine();
-    const t = setTimeout(loadSessions, 250);
+    const t = setTimeout(loadUsage, 250);
     return () => clearTimeout(t);
-  }, [runtime, loadEngine, loadSessions]);
+  }, [runtime, loadEngine, loadUsage]);
 
   // `panes` gets a new identity on every hook tick (a status changed), so
   // depending on it wrote state.json to disk twice a second. Save only when the
   // part that is actually persisted changes.
   const layoutKey = useMemo(
-    () => JSON.stringify({ wsId, panes: panes.map((p) => [p.id, p.cwd, p.runtime, p.sessionId ?? "", p.name ?? ""]) }),
-    [wsId, panes],
+    () => JSON.stringify({
+      wsId, taskId, tasks,
+      panes: panes.map((p) => [p.id, p.taskId, p.cwd, p.runtime, p.sessionId ?? "", p.name ?? "", p.agent]),
+    }),
+    [wsId, taskId, tasks, panes],
   );
   useEffect(() => {
     if (!layoutLoaded) return;
     const l = JSON.parse(layoutKey);
     api.saveLayout({
       wsId: l.wsId,
-      panes: l.panes.map(([id, cwd, runtime, sessionId, name]: string[]) => ({
-        id, cwd, runtime, sessionId: sessionId || undefined, name: name || undefined,
+      taskId: l.taskId,
+      tasks: l.tasks,
+      panes: l.panes.map(([id, tid, cwd, runtime, sessionId, name, agent]: string[]) => ({
+        id, taskId: tid, cwd, runtime, agent, sessionId: sessionId || undefined, name: name || undefined,
       })),
     });
   }, [layoutLoaded, layoutKey]);
@@ -237,6 +256,30 @@ export default function App() {
   useEffect(() => {
     setWsId((cur) => (cur && workspaces.some((w) => w.id === cur) ? cur : workspaces[0]?.id ?? null));
   }, [workspaces]);
+
+  // Layout cũ, hoặc một workspace biến mất khỏi danh sách, để lại tác vụ trỏ
+  // vào wsId không còn ai — dời về workspace đầu tiên, không thì terminal vẫn
+  // chạy mà không còn chỗ nào bấm vào được.
+  useEffect(() => {
+    if (!workspaces.length) return;
+    const known = (id: string) => workspaces.some((w) => w.id === id);
+    setTasks((all) => (all.every((t) => known(t.wsId)) ? all
+      : all.map((t) => (known(t.wsId) ? t : { ...t, wsId: workspaces[0].id }))));
+  }, [workspaces]);
+
+  // Đổi workspace thì tác vụ đang xem phải thuộc workspace đó, không thì lưới
+  // terminal trống trong khi sidebar lại tô sáng một tác vụ ở nơi khác.
+  useEffect(() => {
+    setTaskId((cur) => {
+      const keep = tasks.find((t) => t.id === cur);
+      if (keep && keep.wsId === wsId) return cur;
+      return tasks.find((t) => t.wsId === wsId)?.id ?? null;
+    });
+  }, [wsId, tasks]);
+
+  // Phóng to là trạng thái của một tác vụ. Mang nó sang tác vụ khác thì mọi
+  // pane ở đó đều bị ẩn (không pane nào là pane được phóng), lưới trắng trơn.
+  useEffect(() => { setZoom(null); }, [taskId]);
 
   // Hook events tell us what the agent inside each pane is doing.
   useEffect(() => {
@@ -300,7 +343,7 @@ export default function App() {
       if (was === p.status || (p.status !== "att" && p.status !== "done")) continue;
       if (!notify || !granted.current || document.hasFocus()) continue;
       const name = p.name || shortPath(p.cwd).split(/[/\\]/).pop() || "pane";
-      const title = p.status === "att" ? `${name} · chờ bạn duyệt` : `${name} · Claude đã xong`;
+      const title = `${name} · ${p.status === "att" ? "waiting for you" : "done"}`;
       const body = p.message ?? p.tool ?? STATUS[p.status][1];
       // Windows gets a toast that can be clicked back into the right pane; on
       // anything else that is not possible, so the plugin shows a plain one.
@@ -313,9 +356,18 @@ export default function App() {
 
   const paneName = (p: PaneInfo) => p.name || shortPath(p.cwd).split(/[/\\]/).pop() || "pane";
 
+  // Đọc trạng thái mới nhất mà không phải khai vào deps: `jump` là handler của
+  // sự kiện toast, đăng ký một lần lúc mount.
+  const now = useRef({ panes, tasks });
+  now.current = { panes, tasks };
   const jump = useCallback((id: string) => {
     setInbox(false);
     setView("code");
+    // Nhảy từ hộp thư hay từ toast có thể là terminal ở tác vụ khác — kéo cả
+    // tác vụ và workspace của nó theo, không thì bấm xong màn hình y nguyên.
+    const p = now.current.panes.find((x) => x.id === id);
+    const t = p && now.current.tasks.find((x) => x.id === p.taskId);
+    if (t) { setWsId(t.wsId); setTaskId(t.id); }
     setFocus(id);
     terms.current[id]?.focus();
   }, []);
@@ -328,10 +380,10 @@ export default function App() {
   }, [jump]);
 
   // ----------------------------------------------------------------- panes
-  const addPane = useCallback((dir: string, command?: string, rt = runtime) => {
+  const addPane = useCallback((dir: string, tid: string, command?: string, rt = runtime, agent: Slot = "terminal") => {
     const id = `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     if (command) queued.current[id] = command;
-    setPanes((p) => [...p, { id, cwd: dir, runtime: rt, status: "idle", since: Date.now(), blocks: [], todos: [] }]);
+    setPanes((p) => [...p, { id, taskId: tid, cwd: dir, runtime: rt, agent, status: "idle", since: Date.now(), blocks: [], todos: [] }]);
     setFocus(id);
     setView("code");
     return id;
@@ -339,23 +391,55 @@ export default function App() {
 
   const send = useCallback((id: string, text: string) => { void api.ptyWrite(id, text + "\r"); }, []);
 
-  const runClaude = useCallback(async (ids: string[], extra?: string) => {
-    for (const id of ids) {
-      const rt = panes.find((p) => p.id === id)?.runtime ?? "host";
-      send(id, await api.claudeCommand(extra, rt));
-    }
-  }, [panes, send]);
+  /** The command that starts one agent. Claude goes through the backend so it
+   *  gets the hook settings that make its status chip work; every other CLI is
+   *  just its own name, so an agent we have never heard of costs one table row. */
+  const agentCommand = useCallback(async (agent: Slot, runtime: string, prompt = "", extra = "") => {
+    if (agent === "terminal") return "";
+    if (agent === "claude")
+      return api.claudeCommand([extra, prompt && quote(prompt)].filter(Boolean).join(" ") || undefined, runtime);
+    const cmd = AGENTS.find((a) => a.id === agent)?.cmd ?? agent;
+    return prompt ? `${cmd} ${quote(prompt)}` : cmd;
+  }, []);
 
-  const resume = useCallback(async (s: Session, fork: boolean) => {
-    const extra = `--resume ${s.id}` + (fork ? " --fork-session" : "");
-    const existing = panes.find((p) => normPath(p.cwd) === normPath(s.cwd));
-    if (existing) {
-      setView("code"); setFocus(existing.id);
-      send(existing.id, await api.claudeCommand(extra, existing.runtime));
-    } else {
-      addPane(s.cwd, await api.claudeCommand(extra, runtime));
-    }
-  }, [panes, addPane, send, runtime]);
+  /** Re-launch the agent a terminal belongs to. */
+  const runAgent = useCallback(async (id: string) => {
+    const p = panes.find((x) => x.id === id);
+    if (!p) return;
+    const cmd = await agentCommand(p.agent === "terminal" ? "claude" : p.agent, p.runtime);
+    if (cmd) send(id, cmd);
+  }, [panes, send, agentCommand]);
+
+  // ------------------------------------------------------------------ tasks
+  const createTask = useCallback(async (w: Workspace, spec: TaskSpec) => {
+    const id = `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
+    setTasks((all) => [...all, { id, wsId: w.id, name: spec.name }]);
+    setWsId(w.id);
+    setTaskId(id);
+    setNewTaskWs(null);
+    setView("code");
+    // One command per distinct agent, not per terminal: four Claudes in a swarm
+    // should not be four round trips to the backend for the same string.
+    const cmd = new Map<Slot, string>();
+    for (const s of new Set(spec.slots))
+      cmd.set(s, await agentCommand(s, spec.runtime, spec.prompt, spec.continueLast ? "--continue" : ""));
+    spec.slots.forEach((s) => addPane(w.path, id, cmd.get(s) || undefined, spec.runtime, s));
+  }, [addPane, agentCommand]);
+
+  const closeTask = useCallback((id: string) => {
+    // Panes unmount with the task, and Pane's cleanup kills their PTYs — that
+    // is the point: closing a task closes the terminals doing it.
+    setPanes((all) => all.filter((p) => p.taskId !== id));
+    setTasks((all) => all.filter((t) => t.id !== id));
+  }, []);
+
+  const commitTaskName = () => {
+    if (!renaming) return;
+    const { id, value } = renaming;
+    setRenaming(null);
+    const name = value.trim();
+    if (name) setTasks((all) => all.map((t) => (t.id === id ? { ...t, name } : t)));
+  };
 
   const commitName = () => {
     if (!naming) return;
@@ -364,35 +448,25 @@ export default function App() {
     setPanes((all) => all.map((x) => (x.id === id ? { ...x, name: value.trim() || undefined } : x)));
   };
 
-  /** One line typed once, delivered to every pane. */
-  const sendAll = () => {
-    const text = broadcast.trim();
-    if (!text) return;
-    panes.forEach((p) => send(p.id, text));
-    setBroadcast("");
-  };
-
   const closePane = (id: string) => {
     setPanes((p) => p.filter((x) => x.id !== id));
     setZoom((z) => (z === id ? null : z));
     delete terms.current[id];
   };
 
-  // Thứ tự pane = thứ tự mảng `panes`, nên nó tự vào layout đã lưu.
-  const movePane = (id: string, to: string | number) => setPanes((all) => reorder(all, id, to));
-
-  const deleteSessions = useCallback(async (files: string[]) => {
-    await api.deleteSessions(files, runtime);
-    await loadSessions();
-  }, [loadSessions, runtime]);
-
-  const renameSession = useCallback(async (file: string, title: string) => {
-    setSessions(await api.renameSession(file, title, runtime));
-  }, [runtime]);
+  // Thứ tự pane = thứ tự mảng `panes`, nên nó tự vào layout đã lưu. Nút ‹ › thì
+  // phải đổi chỗ *trong cùng tác vụ*: hàng xóm trong mảng có thể thuộc tác vụ
+  // khác và đang ẩn, đổi với nó thì lưới không nhúc nhích.
+  const movePane = (id: string, to: string | number) => setPanes((all) => {
+    if (typeof to === "string") return reorder(all, id, to);
+    const mine = all.filter((p) => p.taskId === all.find((x) => x.id === id)?.taskId);
+    const next = mine[mine.findIndex((p) => p.id === id) + to];
+    return next ? reorder(all, id, next.id) : all;
+  });
 
   // ------------------------------------------------------------ workspaces
   const addWorkspace = async () => {
-    const dir = await pickFolder({ directory: true, multiple: false, title: "Chọn thư mục workspace" });
+    const dir = await pickFolder({ directory: true, multiple: false, title: "Choose a workspace folder" });
     if (typeof dir === "string") {
       const list = await api.addWorkspace(dir);
       setWorkspaces(list);
@@ -413,6 +487,11 @@ export default function App() {
 
   const togglePin = (w: Workspace) => api.updateWorkspace(w.id, { favorite: !w.favorite }).then(setWorkspaces);
 
+  const removeWorkspace = (w: Workspace) => {
+    tasks.filter((t) => t.wsId === w.id).forEach((t) => closeTask(t.id));
+    api.removeWorkspace(w.id).then(setWorkspaces);
+  };
+
   // Basenames collide often (two ai-agents, two customshine); show the parent
   // segment only for the ones that actually clash.
   const label = useMemo(() => {
@@ -429,15 +508,25 @@ export default function App() {
   }, [workspaces, wsQuery]);
   const firstUnpinned = visibleWs.findIndex((w) => !w.favorite);
 
+  /** Chỉ terminal của tác vụ đang mở mới hiện; các pane khác vẫn nằm trong DOM
+   *  (ẩn đi) vì unmount là giết PTY. */
+  const shown = panes.filter((p) => p.taskId === taskId);
   // ponytail: a fixed column count, not a draggable split tree. Covers 1–9
   // panes, which is what a screen holds; a resizable tree is the upgrade if
   // that stops being enough.
-  const cols = panes.length <= 1 ? 1 : panes.length <= 2 ? 2 : panes.length <= 4 ? 2 : 3;
+  const cols = shown.length <= 1 ? 1 : shown.length <= 2 ? 2 : shown.length <= 4 ? 2 : 3;
   const attention = panes.filter((p) => p.status === "att").length;
   const waiting = panes
     .filter((p) => p.status === "att" || p.status === "done")
     .sort((a, b) => (a.status === b.status ? b.since - a.since : a.status === "att" ? -1 : 1));
-  const focused = panes.find((p) => p.id === focus) ?? null;
+
+  const navBtn = (v: View) => (
+    <button key={v} className={"nav-item" + (view === v ? " on" : "")} onClick={() => setView(v)}
+            title={VIEW_NAME[v]}>
+      <Icon d={I[v]} />
+      {sideOpen && <span>{VIEW_NAME[v]}</span>}
+    </button>
+  );
 
   return (
     <div className="app">
@@ -445,51 +534,63 @@ export default function App() {
         <div className={"banner" + (engine.installed ? "" : " err")}>
           <span>{engine.problem}</span>
           <span style={{ flex: 1 }} />
-          {engine.installed && !engine.signedIn && (
-            <button className="btn" onClick={() => { const id = addPane(cwd || "."); queued.current[id] = "claude"; }}>
-              Mở pane để đăng nhập
-            </button>
+          {engine.installed && !engine.signedIn && ws && (
+            <button className="btn" onClick={() => setNewTaskWs(ws)}>Open a task to sign in</button>
           )}
-          <button className="btn" onClick={loadEngine}>Kiểm tra lại</button>
+          <button className="btn" onClick={loadEngine}>Check again</button>
         </div>
       )}
 
       <div className="body">
-        <nav className="rail">
-          <img className="logo" src="/icon.png" alt="" />
-          {(["code", "workspace", "sessions", "usage", "settings"] as View[]).map((v) => (
-            <button key={v} className={view === v ? "on" : ""} onClick={() => setView(v)} title={VIEW_NAME[v]}>
-              <Icon d={I[v]} />
-            </button>
-          ))}
-          <span className="spacer" />
-        </nav>
-
         <aside className={"side" + (sideOpen ? "" : " mini")}>
-          <div className="head">
+          <div className="brand">
+            <button className="burger" onClick={toggleSide}
+                    title={sideOpen ? "Collapse sidebar" : "Expand sidebar"}>
+              <Icon d={BURGER} />
+            </button>
             {sideOpen && (
               <>
-                <h2>Workspace</h2>
-                <button className="btn ghost" onClick={openImport} title="Nhập từ danh sách project của Claude Code">Nhập…</button>
-                <button className="btn ghost" onClick={addWorkspace} title="Chọn thư mục">+</button>
+                <img className="logo" src="/icon.png" alt="" />
+                <b>Agentspace</b>
               </>
             )}
-            <button className="btn ghost chev" onClick={toggleSide}
-                    title={sideOpen ? "Thu gọn danh sách workspace" : "Mở rộng danh sách workspace"}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                   strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d={sideOpen ? CHEV.open : CHEV.closed} />
-              </svg>
-            </button>
           </div>
-          {sideOpen && workspaces.length > 6 && (
-            <input className="search" placeholder="Lọc…" value={wsQuery} onChange={(e) => setWsQuery(e.target.value)} />
+
+          <nav className="nav">
+            {navBtn("code")}
+            {navBtn("workspace")}
+            {/* Cấu hình workspace có bảy mục; giấu chúng sau một thanh tab bên
+                trong nghĩa là không ai biết chúng tồn tại. Bung thẳng ra đây. */}
+            {sideOpen && view === "workspace" && (
+              <div className="nav-sub">
+                {WS_TABS.map((t) => (
+                  <button key={t.id} className={wsTab === t.id ? "on" : ""} title={t.note}
+                          onClick={() => setWsTab(t.id)}>{t.name}</button>
+                ))}
+              </div>
+            )}
+            {navBtn("usage")}
+            {navBtn("settings")}
+          </nav>
+
+          {sideOpen && (
+            <div className="head">
+              <h2>Workspace</h2>
+              <span className="sp" />
+              <button className="btn ghost" onClick={openImport} title="Import folders your agents have already worked in">Import…</button>
+              <button className="btn ghost" onClick={addWorkspace} title="Pick a folder">+</button>
+            </div>
           )}
-          {/* Thu gọn: dải 44px vẫn dùng được — nút thêm workspace và chữ cái
-              đầu của từng workspace để đổi qua lại mà không cần bung ra. */}
+
+          {sideOpen && workspaces.length > 6 && (
+            <input className="search" placeholder="Filter…" value={wsQuery} onChange={(e) => setWsQuery(e.target.value)} />
+          )}
+
+          {/* Thu gọn: dải hẹp vẫn dùng được — chữ cái đầu của từng workspace để
+              đổi qua lại mà không cần bung ra. */}
           {!sideOpen && (
             <div className="mini-list">
-              <button className="mini-ws add" onClick={addWorkspace} title="Thêm workspace (chọn thư mục)">+</button>
+              <button className="mini-ws add" onClick={addWorkspace} title="Add a workspace (pick a folder)">+</button>
               {visibleWs.map((w) => (
                 <button key={w.id} className={"mini-ws" + (w.id === wsId ? " on" : "")}
                         onClick={() => setWsId(w.id)} title={`${label(w)} — ${shortPath(w.path)}`}>
@@ -498,35 +599,81 @@ export default function App() {
               ))}
             </div>
           )}
+
           <div className="list" style={{ display: sideOpen ? "block" : "none" }}>
             {workspaces.length === 0 && (
               <div className="ws-empty">
-                <p>Chưa có workspace nào.</p>
-                <p className="s">Agentspace không tự thêm thư mục — bạn chọn cái mình muốn.</p>
-                <button className="btn primary" onClick={addWorkspace}>Chọn thư mục…</button>
-                <button className="btn" onClick={openImport}>Nhập từ Claude Code</button>
+                <p>No workspaces yet.</p>
+                <p className="s">Agentspace never adds folders on its own — you pick the ones you want.</p>
+                <button className="btn primary" onClick={addWorkspace}>Pick a folder…</button>
+                <button className="btn" onClick={openImport}>Import existing folders</button>
               </div>
             )}
             {visibleWs.map((w, i) => {
               const g = git[w.path];
+              const mine = tasks.filter((t) => t.wsId === w.id);
+              const open = w.id === wsId;
               return (
                 <div key={w.id}>
                   {i === firstUnpinned && i > 0 && <div className="sep" />}
-                  <div className={"ws" + (w.id === wsId ? " on" : "")} onClick={() => setWsId(w.id)} title={w.path}>
-                    <button className={"pin" + (w.favorite ? " on" : "")} title={w.favorite ? "Bỏ ghim" : "Ghim lên đầu"}
+                  <div className={"ws" + (open ? " on" : "")} onClick={() => setWsId(w.id)} title={w.path}>
+                    <button className={"pin" + (w.favorite ? " on" : "")} title={w.favorite ? "Unpin" : "Pin to top"}
                             onClick={(e) => { e.stopPropagation(); togglePin(w); }}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill={w.favorite ? "currentColor" : "none"}
                            stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"><path d={PIN} /></svg>
                     </button>
                     <span className="n">{label(w)}</span>
                     {g?.isRepo && <span className="b">{g.branch}{g.dirty ? `·${g.dirty}` : ""}</span>}
-                    <button className="x" title="Bỏ khỏi danh sách"
-                            onClick={(e) => { e.stopPropagation(); api.removeWorkspace(w.id).then(setWorkspaces); }}>×</button>
+                    {mine.length > 0 && <span className="count">{mine.length}</span>}
+                    <button className="x" title="New task in this workspace"
+                            onClick={(e) => { e.stopPropagation(); setNewTaskWs(w); }}>+</button>
+                    <button className="x" title="Remove from the list"
+                            onClick={(e) => { e.stopPropagation(); removeWorkspace(w); }}>×</button>
                   </div>
+                  {open && (
+                    <div className="tasks">
+                      {mine.map((t) => {
+                        const its = panes.filter((p) => p.taskId === t.id);
+                        const [cls] = STATUS[loudest(its.map((p) => p.status))];
+                        return (
+                          <div key={t.id} className={"task" + (t.id === taskId ? " on" : "")}
+                               onClick={() => { setTaskId(t.id); setView("code"); }}>
+                            <span className={"dot " + cls} />
+                            {renaming?.id === t.id ? (
+                              <input className="rename" autoFocus value={renaming.value}
+                                     onClick={(e) => e.stopPropagation()}
+                                     onFocus={(e) => e.currentTarget.select()}
+                                     onChange={(e) => setRenaming({ id: t.id, value: e.target.value })}
+                                     onBlur={commitTaskName}
+                                     onKeyDown={(e) => {
+                                       if (e.key === "Enter") commitTaskName();
+                                       if (e.key === "Escape") setRenaming(null);
+                                     }} />
+                            ) : (
+                              <span className="n" title="Double-click to rename"
+                                    onDoubleClick={(e) => { e.stopPropagation(); setRenaming({ id: t.id, value: t.name }); }}>
+                                {t.name}
+                              </span>
+                            )}
+                            <span className="c">{its.length}</span>
+                            <button className="x" title="Add a terminal to this task"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      const w = workspaces.find((x) => x.id === t.wsId);
+                                      if (w) { setTaskId(t.id); addPane(w.path, t.id); }
+                                    }}>+</button>
+                            <button className="x" title="Close the task and all its terminals"
+                                    onClick={(e) => { e.stopPropagation(); closeTask(t.id); }}>×</button>
+                          </div>
+                        );
+                      })}
+                      <button className="task add" onClick={() => setNewTaskWs(w)}>+ New task</button>
+                    </div>
+                  )}
                 </div>
               );
             })}
-            {workspaces.length > 0 && visibleWs.length === 0 && <div className="hint">Không khớp bộ lọc.</div>}
+            {workspaces.length > 0 && visibleWs.length === 0 && <div className="hint">Nothing matches the filter.</div>}
           </div>
         </aside>
 
@@ -538,11 +685,11 @@ export default function App() {
           <div className="view" style={{ display: view === "code" ? "flex" : "none" }}>
             <>
               <div className="toolbar">
-                <span className="title">{ws ? label(ws) : "Chưa chọn workspace"}</span>
+                <span className="title">{task ? task.name : ws ? label(ws) : "No workspace selected"}</span>
                 <span className="path">{ws ? shortPath(ws.path) : ""}</span>
                 <span className="sp" />
                 {runtimes.length > 1 && (
-                  <div className="seg" title="Pane mới sẽ chạy shell ở đâu">
+                  <div className="seg" title="Where new terminals will run">
                     {runtimes.map((r) => (
                       <button key={r.id} className={runtime === r.id ? "on" : ""}
                               onClick={() => pickRuntime(r.id)}>
@@ -551,44 +698,45 @@ export default function App() {
                     ))}
                   </div>
                 )}
-                {focused && (
-                  <button className="btn primary" onClick={() => runClaude([focused.id])}
-                          disabled={!engine?.signedIn}>Chạy Claude</button>
-                )}
-                {panes.length > 1 && (
-                  <>
-                    <input className="search" style={{ margin: 0, width: 190 }} value={broadcast}
-                           placeholder="Gửi mọi pane… (Enter)"
-                           title="Gõ một dòng, Enter gửi vào tất cả pane"
-                           onChange={(e) => setBroadcast(e.target.value)}
-                           onKeyDown={(e) => { if (e.key === "Enter") sendAll(); }} />
-                    <button className="btn" onClick={() => runClaude(panes.map((p) => p.id))}
-                            disabled={!engine?.signedIn}>Chạy tất cả</button>
-                  </>
-                )}
-                <button className="btn" onClick={() => cwd && addPane(cwd)} disabled={!cwd}>+ Pane</button>
               </div>
 
-              {panes.length === 0 ? (
+              {shown.length === 0 && (
                 <div className="empty-main">
                   <div>
-                    <p>{ws ? "Chưa có pane nào." : "Thêm một workspace bên trái để bắt đầu."}</p>
-                    {ws && (
-                      <button className="btn primary" onClick={() => addPane(cwd)}>
-                        Mở terminal trong {label(ws)}
-                      </button>
+                    {!ws ? (
+                      <p>Add a workspace on the left to get started.</p>
+                    ) : !task ? (
+                      <>
+                        <p>{label(ws)} has no tasks yet.</p>
+                        <p className="s">A task is one thing you are working on — and the terminals doing it.</p>
+                        <button className="btn primary" onClick={() => setNewTaskWs(ws)}>+ New task</button>
+                      </>
+                    ) : (
+                      <>
+                        <p>Task “{task.name}” has no terminals left.</p>
+                        <button className="btn primary" onClick={() => addPane(cwd, task.id)}>+ Terminal</button>
+                      </>
                     )}
                   </div>
                 </div>
-              ) : (
-                <div className="grid" style={{ gridTemplateColumns: `repeat(${zoom ? 1 : cols}, minmax(0, 1fr))` }}>
+              )}
+              {/* Lưới luôn nằm trong DOM, kể cả khi tác vụ đang mở không có
+                  terminal nào. Trước đây nó bị tháo ra lúc rỗng — mà tháo là
+                  chạy cleanup của Pane, tức là giết PTY của *mọi* tác vụ khác:
+                  chuyển sang một workspace chưa có tác vụ là Claude chết sạch. */}
+              <div className="grid"
+                   style={{
+                     gridTemplateColumns: `repeat(${zoom ? 1 : cols}, minmax(0, 1fr))`,
+                     display: shown.length === 0 ? "none" : undefined,
+                   }}>
                   {panes.map((p) => {
                     const [cls, statusLabel] = STATUS[p.status];
+                    const hidden = p.taskId !== taskId || (zoom !== null && zoom !== p.id);
                     return (
                       <section key={p.id}
                                className={"pane" + (focus === p.id ? " focus" : "") + (overPane === p.id ? " over" : "")}
                                // Hidden, not unmounted: unmounting kills the PTY.
-                               style={zoom && zoom !== p.id ? { display: "none" } : undefined}
+                               style={hidden ? { display: "none" } : undefined}
                                onMouseDown={() => setFocus(p.id)}>
                         <header className="ph" draggable
                                 onDragStart={(e) => { dragPane.current = p.id; e.dataTransfer.effectAllowed = "move"; }}
@@ -614,7 +762,7 @@ export default function App() {
                                      if (e.key === "Escape") setNaming(null);
                                    }} />
                           ) : (
-                            <span className="nm" title="Bấm đúp để đặt tên pane"
+                            <span className="nm" title="Double-click to name this terminal"
                                   onDoubleClick={() => setNaming({ id: p.id, value: p.name ?? "" })}>
                               {p.name || shortPath(p.cwd).split(/[/\\]/).pop()}
                             </span>
@@ -626,33 +774,33 @@ export default function App() {
                           )}
                           <span className={"chip " + cls}><span className="d" />{p.tool ?? p.message ?? statusLabel}</span>
                           <span className="sp" />
-                          {panes.length > 1 && (
+                          {shown.length > 1 && (
                             <>
-                              <button className="btn ghost" style={{ padding: "1px 6px" }} title="Chuyển lên trước"
-                                      disabled={panes[0].id === p.id} onClick={() => movePane(p.id, -1)}>‹</button>
-                              <button className="btn ghost" style={{ padding: "1px 6px" }} title="Chuyển ra sau"
-                                      disabled={panes[panes.length - 1].id === p.id} onClick={() => movePane(p.id, 1)}>›</button>
+                              <button className="btn ghost" style={{ padding: "1px 6px" }} title="Move earlier"
+                                      disabled={shown[0].id === p.id} onClick={() => movePane(p.id, -1)}>‹</button>
+                              <button className="btn ghost" style={{ padding: "1px 6px" }} title="Move later"
+                                      disabled={shown[shown.length - 1].id === p.id} onClick={() => movePane(p.id, 1)}>›</button>
                             </>
                           )}
                           {p.todos.length > 0 && (
                             <button className="btn ghost" style={{ padding: "1px 6px" }}
                                     onClick={() => setShowTodos(showTodos === p.id ? null : p.id)}
-                                    title="Việc Claude đang tự lên kế hoạch">
+                                    title="The plan the agent is keeping for itself">
                               ☑ {p.todos.filter((t) => t.status === "completed").length}/{p.todos.length}
                             </button>
                           )}
                           <button className="btn ghost" style={{ padding: "1px 6px" }}
                                   onClick={() => setShowBlocks(showBlocks === p.id ? null : p.id)}
-                                  title="Lệnh đã chạy">⌘ {p.blocks.length}</button>
+                                  title="Commands run here">⌘ {p.blocks.length}</button>
                           <button className="btn ghost" style={{ padding: "1px 6px" }}
                                   onClick={() => setZoom(zoom === p.id ? null : p.id)}
-                                  title={zoom === p.id ? "Thu về lưới" : "Phóng to pane này"}>
+                                  title={zoom === p.id ? "Back to the grid" : "Zoom this terminal"}>
                             {zoom === p.id ? "⤡" : "⤢"}
                           </button>
                           <button className="btn ghost" style={{ padding: "1px 6px" }}
-                                  onClick={() => runClaude([p.id])} title="Chạy Claude ở pane này">▶</button>
+                                  onClick={() => runAgent(p.id)} title={`Run ${agentName(p.agent === "terminal" ? "claude" : p.agent)} here`}>▶</button>
                           <button className="btn ghost" style={{ padding: "1px 6px" }}
-                                  onClick={() => closePane(p.id)} title="Đóng pane">×</button>
+                                  onClick={() => closePane(p.id)} title="Close terminal">×</button>
                         </header>
                         {showTodos === p.id && (
                           <div className="blocks todos">
@@ -691,18 +839,12 @@ export default function App() {
                       </section>
                     );
                   })}
-                </div>
-              )}
+              </div>
             </>
           </div>
 
           {view === "workspace" && (
-            <WorkspaceView workspace={ws?.path ?? ""} name={ws ? label(ws) : ""} runtime={runtime} />
-          )}
-          {view === "sessions" && (
-            <SessionsView sessions={sessions} busy={scanning} scopePath={ws?.path ?? null} runtime={runtime}
-                          onRefresh={loadSessions} onResume={resume} onDelete={deleteSessions}
-                          onRename={renameSession} />
+            <WorkspaceView workspace={ws?.path ?? ""} name={ws ? label(ws) : ""} runtime={runtime} tab={wsTab} />
           )}
           {view === "usage" && <UsageView runtime={runtime} />}
           {view === "settings" && (
@@ -716,24 +858,31 @@ export default function App() {
         <ImportSheet paths={importable} onCancel={() => setImportable(null)} onConfirm={confirmImport} />
       )}
 
+      {newTaskWs && (
+        <TaskSheet wsName={label(newTaskWs)} wsPath={newTaskWs.path} runtimes={runtimes} runtime={runtime}
+                   onCancel={() => setNewTaskWs(null)}
+                   onCreate={(spec) => createTask(newTaskWs, spec)} />
+      )}
+
       {inbox && (
         <>
           <div className="inbox-scrim" onClick={() => setInbox(false)} />
           <div className="inbox">
             <header>
-              <b>Hộp thư</b>
+              <b>Inbox</b>
               <span className="sp" />
-              <span>{attention} chờ duyệt · {waiting.length - attention} xong</span>
+              <span>{attention} waiting · {waiting.length - attention} done</span>
             </header>
             {waiting.length === 0 ? (
-              <div className="hint">Không có pane nào đang cần bạn.</div>
+              <div className="hint">Nothing needs you right now.</div>
             ) : (
               waiting.map((p) => {
                 const [cls, statusLabel] = STATUS[p.status];
+                const t = tasks.find((x) => x.id === p.taskId);
                 return (
                   <button key={p.id} className="inbox-row" onClick={() => jump(p.id)}>
                     <span className={"chip " + cls}><span className="d" />{statusLabel}</span>
-                    <span className="n">{paneName(p)}</span>
+                    <span className="n">{t ? `${t.name} · ` : ""}{paneName(p)}</span>
                     <span className="msg">{p.message ?? p.tool ?? shortPath(p.cwd)}</span>
                     <span className="t">{ago(p.since)}</span>
                   </button>
@@ -751,22 +900,22 @@ export default function App() {
             <span>{engine.account.plan || "—"}{engine.authSource === "api-key" ? " · API key" : ""}</span>
           </>
         ) : (
-          <span>chưa đăng nhập</span>
+          <span>not signed in</span>
         )}
         <span>Claude Code {engine?.version?.split(" ")[0] ?? "?"}</span>
         <span className="sp" />
         <button className={"inbox-btn" + (attention > 0 ? " att" : "")} onClick={() => setInbox((o) => !o)}
-                title="Pane nào đang chờ bạn duyệt hoặc vừa xong">
-          Hộp thư{waiting.length > 0 ? ` ${waiting.length}` : ""}
+                title="Terminals waiting for you, or just finished">
+          Inbox{waiting.length > 0 ? ` ${waiting.length}` : ""}
           {attention > 0 && <span className="dot" />}
         </button>
-        <span>{panes.length} pane</span>
+        <span>{tasks.length} tasks · {panes.length} terminals</span>
         {block && (
-          <span title={`Cửa sổ 5 giờ mở lúc ${new Date(block.startMs).toLocaleTimeString("vi-VN")} — xem tab Mức dùng`}>
-            cửa sổ 5h <b>{fmtTokens(blockTokens(block))}</b> · còn {until(block.endMs)}
+          <span title={`5-hour window opened at ${new Date(block.startMs).toLocaleTimeString("en-GB")} — see the Usage tab`}>
+            5h window <b>{fmtTokens(blockTokens(block))}</b> · {until(block.endMs)} left
           </span>
         )}
-        <span>hôm nay <b>{fmtTokens(today.output)}</b> token ra{today.costUsd > 0 ? ` · ${fmtUsd(today.costUsd)}` : ""}</span>
+        <span>today <b>{fmtTokens(today.output)}</b> output tokens{today.costUsd > 0 ? ` · ${fmtUsd(today.costUsd)}` : ""}</span>
       </footer>
     </div>
   );

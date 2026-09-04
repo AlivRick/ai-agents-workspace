@@ -9,7 +9,8 @@
     "tauri": "tauri",
     "check:paths": "node --experimental-strip-types src/paths.check.ts",
     "check:reorder": "node --experimental-strip-types src/reorder.check.ts",
-    "check:limits": "node --experimental-strip-types src/limits.check.ts"
+    "check:limits": "node --experimental-strip-types src/limits.check.ts",
+    "check:task": "node --experimental-strip-types src/task.check.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

@@ -75,13 +75,13 @@ export default function ImportSheet({
       <div key={n.path}>
         <div className="node" style={{ paddingLeft: 8 + depth * 16 }}>
           <button className={"twist" + (isBranch ? "" : " hidden")} onClick={() => toggleOpen(n.path)}
-                  title={expanded ? "Thu gọn" : "Mở rộng"}>{expanded ? "▾" : "▸"}</button>
+                  title={expanded ? "Collapse" : "Expand"}>{expanded ? "▾" : "▸"}</button>
           <input
             type="checkbox"
             checked={all.length > 0 && chosen === all.length}
             ref={(el) => { if (el) el.indeterminate = chosen > 0 && chosen < all.length; }}
             onChange={(e) => setMany(all, e.target.checked)}
-            title={isBranch ? `Chọn cả ${all.length} thư mục trong nhánh này` : "Chọn thư mục này"}
+            title={isBranch ? `Select all ${all.length} folders in this branch` : "Select this folder"}
           />
           <span className={"n" + (n.importable ? "" : " branch")} onClick={() => isBranch && toggleOpen(n.path)}>
             {n.name}
@@ -98,25 +98,25 @@ export default function ImportSheet({
     <div className="modal" onClick={onCancel}>
       <div className="sheet" onClick={(e) => e.stopPropagation()}>
         <header>
-          <b>Mở workspace từ Claude Code</b>
-          <span className="path">{byKey.size} thư mục · bấm ▸ để mở nhánh</span>
+          <b>Import workspaces from Claude Code</b>
+          <span className="path">{byKey.size} folders · click ▸ to open a branch</span>
           <span className="sp" />
           <button className="btn ghost"
                   onClick={() => setOpen(new Set([...byKey.keys()].flatMap((p) =>
-                    p.split("/").map((_, i, a) => "/" + a.slice(1, i + 1).join("/")))))}>Mở hết</button>
-          <button className="btn ghost" onClick={() => setPicked(new Set())}>Bỏ chọn</button>
+                    p.split("/").map((_, i, a) => "/" + a.slice(1, i + 1).join("/")))))}>Expand all</button>
+          <button className="btn ghost" onClick={() => setPicked(new Set())}>Clear</button>
         </header>
         <div className="sheet-list tree">
-          {tree.length === 0 && <div className="hint">Không còn thư mục nào để thêm.</div>}
+          {tree.length === 0 && <div className="hint">No folders left to add.</div>}
           {tree.map((n) => render(n, 0))}
         </div>
         <footer>
-          <span className="path">{picked.size} đã chọn</span>
+          <span className="path">{picked.size} selected</span>
           <span className="sp" />
-          <button className="btn ghost" onClick={onCancel}>Huỷ</button>
+          <button className="btn ghost" onClick={onCancel}>Cancel</button>
           <button className="btn primary" disabled={picked.size === 0}
                   onClick={() => onConfirm([...picked].map((k) => byKey.get(k) ?? k))}>
-            Thêm {picked.size || ""} workspace
+            Add {picked.size || ""} workspace{picked.size === 1 ? "" : "s"}
           </button>
         </footer>
       </div>

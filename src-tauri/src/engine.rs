@@ -201,10 +201,15 @@ pub fn usage_text(runtime: &str) -> Option<String> {
     // mà thẻ này đang vẽ.
     const PROBE: &str = "agentspace-usage-probe";
     let out = if let Some(distro) = wsl::distro_of(runtime) {
+        // Không một dấu nháy kép nào trong lệnh này: `wsl.exe` được gọi qua
+        // dòng lệnh Windows, dấu nháy bị nuốt trên đường đi và `$d` về rỗng —
+        // đúng lỗi đã làm app bản Windows luôn rơi về số ước lượng. Mọi đường
+        // dẫn ở đây không có khoảng trắng nên không cần nháy.
         wsl::run(
             distro,
             &format!(
-                "d=\"${{TMPDIR:-/tmp}}/{PROBE}\"; mkdir -p \"$d\" && cd \"$d\" && claude -p /usage;                  rm -rf \"$HOME/.claude/projects/\"*-{PROBE}"
+                "mkdir -p /tmp/{PROBE} && cd /tmp/{PROBE} && claude -p /usage </dev/null; \
+                 rm -rf $HOME/.claude/projects/*-{PROBE}"
             ),
         )
         .map(|b| String::from_utf8_lossy(&b).into_owned())
@@ -251,11 +256,11 @@ pub fn status(runtime: &str) -> EngineStatus {
         let account = wsl::read_file(distro, "\"$HOME/.claude.json\"").as_deref().and_then(account_from_json);
         let signed_in = account.is_some() && wsl::file_exists(distro, "\"$HOME/.claude/.credentials.json\"");
         let problem = if version.is_none() {
-            Some(format!("WSL · {distro} chưa cài Claude Code. Mở terminal WSL và chạy `npm install -g @anthropic-ai/claude-code`."))
+            Some(format!("WSL · {distro} has no Claude Code. Open a WSL terminal and run `npm install -g @anthropic-ai/claude-code`."))
         } else if !version_ok {
-            Some(format!("Claude Code trong WSL · {distro} quá cũ. Chạy `claude update` để lên {min} trở lên."))
+            Some(format!("Claude Code in WSL · {distro} is too old. Run `claude update` to reach {min} or newer."))
         } else if !signed_in {
-            Some(format!("Claude Code trong WSL · {distro} chưa đăng nhập. Mở pane WSL, chạy `claude`, đăng nhập rồi thử lại."))
+            Some(format!("Claude Code in WSL · {distro} is not signed in. Open a WSL terminal, run `claude`, sign in, then try again."))
         } else {
             None
         };
@@ -277,7 +282,7 @@ pub fn status(runtime: &str) -> EngineStatus {
             min_version: min,
             auth_source: "none".into(),
             problem: Some(
-                "Không tìm thấy Claude Code. Cài bằng `npm install -g @anthropic-ai/claude-code`, rồi mở lại Agentspace.".into(),
+                "Claude Code not found. Install it with `npm install -g @anthropic-ai/claude-code`, then reopen Agentspace.".into(),
             ),
             ..Default::default()
         };
@@ -306,12 +311,12 @@ pub fn status(runtime: &str) -> EngineStatus {
 
     let problem = if !version_ok {
         Some(format!(
-            "Claude Code {} quá cũ. Chạy `claude update` để lên {} trở lên.",
+            "Claude Code {} is too old. Run `claude update` to reach {} or newer.",
             version.clone().unwrap_or_else(|| "?".into()),
             min
         ))
     } else if !signed_in {
-        Some("Claude Code chưa đăng nhập trên máy này. Mở terminal, chạy `claude`, đăng nhập, rồi thử lại.".into())
+        Some("Claude Code is not signed in on this machine. Open a terminal, run `claude`, sign in, then try again.".into())
     } else {
         None
     };
