@@ -94,17 +94,45 @@ pub fn file_exists(distro: &str, path: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// One login-shell command inside the distro, stdout as bytes.
+/// One command inside the distro, run the way the *pane* runs things: through
+/// the user's own login shell, interactively.
+///
+/// `sh -lc` — the obvious choice, and what this used to do — is wrong here. A
+/// login shell reads /etc/profile and ~/.profile and nothing else, but both
+/// ways of installing Claude Code put it on PATH from an *interactive* rc file:
+/// the native installer appends to ~/.bashrc and ~/.zshrc, and nvm's shim block
+/// lives there too. So a distro that runs `claude` perfectly well in a pane
+/// reported "not installed" to the status check.
+///
+/// Widening PATH by hand instead was worse: `$PATH` inside WSL carries the
+/// Windows side of it, so `/mnt/c/Program Files/...` word-splits and the export
+/// dies. The interactive shell already knows the answer — ask it.
+///
+/// `timeout` because an rc file can block forever (instant prompts, a `read` in
+/// a prompt hook), and the caller picks its answer out by shape because rc
+/// chatter lands on stdout alongside it.
 pub fn run(distro: &str, cmd: &str) -> Option<Vec<u8>> {
-    wsl(&["-d", distro, "--", "sh", "-lc", cmd])
+    let shell = login_shell(distro);
+    wsl(&["-d", distro, "--", "timeout", "20", &shell, "-ic", cmd])
+        .or_else(|| wsl(&["-d", distro, "--", "sh", "-lc", cmd]))
 }
 
 /// `claude --version` as the distro sees it — a Windows install of the CLI says
 /// nothing about whether the Linux side has one.
 pub fn claude_version(distro: &str) -> Option<String> {
-    wsl(&["-d", distro, "--", "sh", "-lc", "command -v claude >/dev/null && claude --version"])
-        .map(|b| String::from_utf8_lossy(&b).trim().to_string())
-        .filter(|s| !s.is_empty())
+    version_of(run(distro, "command -v claude >/dev/null && claude --version"))
+}
+
+/// The version line out of whatever the shell printed. `claude --version` says
+/// "2.1.260 (Claude Code)", so take the last line that starts with a digit — rc
+/// errors and prompt junk never do.
+fn version_of(out: Option<Vec<u8>>) -> Option<String> {
+    String::from_utf8_lossy(&out?)
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with(|c: char| c.is_ascii_digit()))
+        .next_back()
+        .map(str::to_string)
 }
 
 pub fn runtimes(host_label: &str, host_kind: &str, host_shell: &str) -> Vec<Runtime> {
@@ -167,6 +195,16 @@ mod tests {
         assert_eq!(decode_utf16le(&bytes), text);
         assert_eq!(parse_distro_list(&decode_utf16le(&bytes)), vec!["Ubuntu", "docker-desktop"]);
         assert_eq!(parse_distro_list("Ubuntu (Default)\n"), vec!["Ubuntu"]);
+    }
+
+    #[test]
+    fn version_survives_a_noisy_rc_file() {
+        // Đúng thứ zsh tương tác in ra ở máy user: lỗi rc trước, version sau.
+        let noisy = b"/home/y/.zshrc:123: command not found: rbenv\n2.1.260 (Claude Code)\n";
+        assert_eq!(version_of(Some(noisy.to_vec())).as_deref(), Some("2.1.260 (Claude Code)"));
+        // Không có claude thì shell chỉ in rác — không được nhận nhầm là version.
+        assert_eq!(version_of(Some(b"zsh: no such file\n".to_vec())), None);
+        assert_eq!(version_of(None), None);
     }
 
     #[test]
