@@ -64,6 +64,13 @@ const PIN = "M9 3h6l-1 6 4 3v2h-5v7l-1 1-1-1v-7H6v-2l4-3z";
 /** Nút thu gọn. Cùng một icon ở cả hai trạng thái, đứng yên một chỗ — chevron
  *  đổi chiều mà logo lại nhảy theo là thứ làm thanh bên trông lệch lúc thu. */
 const BURGER = "M4 7h16M4 12h16M4 17h16";
+/** Tác vụ nháp: terminal mở nhanh, không thuộc workspace nào. `wsId` là mã này
+ *  chứ không phải một workspace thật, và cwd là "~" — cả shell trên máy lẫn
+ *  `wsl --cd` đều hiểu đó là thư mục nhà, nên không phải hỏi backend nhà ở đâu.
+ *  Một tác vụ duy nhất, id cố định: mở nhanh lần thứ hai là thêm terminal vào
+ *  chỗ cũ, không phải rải ra một hàng tác vụ "Scratch 1, Scratch 2". */
+const SCRATCH = "scratch";
+const SCRATCH_TASK = "tscratch";
 
 export default function App() {
   const [view, setView] = useState<View>("code");
@@ -114,7 +121,6 @@ export default function App() {
 
   const theme = themeById(themeId);
   const ws = workspaces.find((w) => w.id === wsId) ?? null;
-  const cwd = ws?.path ?? "";
   const task = tasks.find((t) => t.id === taskId) ?? null;
 
   // ---------------------------------------------------------------- theme
@@ -162,7 +168,7 @@ export default function App() {
   const loadWorkspaces = useCallback(async () => {
     const list = await api.listWorkspaces();
     setWorkspaces(list);
-    setWsId((cur) => (cur && list.some((w) => w.id === cur) ? cur : list[0]?.id ?? null));
+    setWsId((cur) => (cur === SCRATCH || (cur && list.some((w) => w.id === cur)) ? cur : list[0]?.id ?? null));
   }, []);
 
   // Branch và số file đang đổi phải hỏi git *trong runtime đang chọn*: đường
@@ -292,7 +298,7 @@ export default function App() {
   // Whatever added the workspace — folder picker, import sheet, a removal that
   // orphaned the selection — land on something rather than on "chưa chọn".
   useEffect(() => {
-    setWsId((cur) => (cur && workspaces.some((w) => w.id === cur) ? cur : workspaces[0]?.id ?? null));
+    setWsId((cur) => (cur === SCRATCH || (cur && workspaces.some((w) => w.id === cur)) ? cur : workspaces[0]?.id ?? null));
   }, [workspaces]);
 
   // Layout cũ, hoặc một workspace biến mất khỏi danh sách, để lại tác vụ trỏ
@@ -300,7 +306,7 @@ export default function App() {
   // chạy mà không còn chỗ nào bấm vào được.
   useEffect(() => {
     if (!workspaces.length) return;
-    const known = (id: string) => workspaces.some((w) => w.id === id);
+    const known = (id: string) => id === SCRATCH || workspaces.some((w) => w.id === id);
     setTasks((all) => (all.every((t) => known(t.wsId)) ? all
       : all.map((t) => (known(t.wsId) ? t : { ...t, wsId: workspaces[0].id }))));
   }, [workspaces]);
@@ -490,6 +496,34 @@ export default function App() {
     setTasks((all) => all.filter((t) => t.id !== id));
   }, []);
 
+  /** Nơi terminal của một tác vụ mở ra: worktree nếu có, không thì thư mục
+   *  workspace — và "~" cho tác vụ nháp, thứ không thuộc workspace nào. */
+  const taskDir = useCallback((t: Task) =>
+    t.wt?.path ?? (t.wsId === SCRATCH ? "~" : workspaces.find((w) => w.id === t.wsId)?.path ?? "~"),
+  [workspaces]);
+
+  /** Terminal mở nhanh: không hỏi workspace, không hỏi agent, chỉ một shell ở
+   *  thư mục nhà. Lần đầu tạo luôn tác vụ nháp; những lần sau thêm terminal vào
+   *  chính nó. */
+  const openScratch = useCallback(() => {
+    setTasks((all) => (all.some((t) => t.id === SCRATCH_TASK) ? all
+      : [...all, { id: SCRATCH_TASK, wsId: SCRATCH, name: "Scratch" }]));
+    setWsId(SCRATCH);
+    setTaskId(SCRATCH_TASK);
+    addPane("~", SCRATCH_TASK);
+  }, [addPane]);
+
+  // Ctrl+` — cùng phím mở terminal của VS Code, vì đây là cùng một động tác.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "`" || !(e.ctrlKey || e.metaKey) || e.altKey) return;
+      e.preventDefault();
+      openScratch();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [openScratch]);
+
   /** The branch landed or went in the bin; either way the checkout has to go —
    *  and it can only go once nothing is standing in it. A shell whose cwd is
    *  the worktree holds that directory open on Windows, so the terminals close
@@ -579,6 +613,8 @@ export default function App() {
   /** Chỉ terminal của tác vụ đang mở mới hiện; các pane khác vẫn nằm trong DOM
    *  (ẩn đi) vì unmount là giết PTY. */
   const shown = panes.filter((p) => p.taskId === taskId);
+  const scratch = tasks.find((t) => t.id === SCRATCH_TASK) ?? null;
+  const scratchPanes = panes.filter((p) => p.taskId === SCRATCH_TASK);
   // ponytail: a fixed column count, not a draggable split tree. Covers 1–9
   // panes, which is what a screen holds; a resizable tree is the upgrade if
   // that stops being enough.
@@ -691,6 +727,29 @@ export default function App() {
             {navBtn("settings")}
           </nav>
 
+          {/* Terminal mở nhanh. Đứng trên danh sách workspace vì đó đúng là lúc
+              bạn với tới nó: cần một shell ngay, chưa muốn nghĩ việc này thuộc
+              dự án nào — hoặc nó chẳng thuộc dự án nào cả. */}
+          {sideOpen && (
+            <div className="tasks scratch">
+              <button className="task add" onClick={openScratch}
+                      title="Mở một terminal ở thư mục nhà, không cần chọn workspace (Ctrl+`)">
+                + Quick terminal
+              </button>
+              {scratch && (
+                <div className={"task" + (scratch.id === taskId ? " on" : "")}
+                     onClick={() => { setWsId(SCRATCH); setTaskId(scratch.id); setView("code"); }}>
+                  <span className={"dot " + STATUS[loudest(scratchPanes.map((p) => p.status))][0]} />
+                  <AgentIcon agent={taskAgent(scratchPanes)} />
+                  <span className="n">{scratch.name}</span>
+                  {scratchPanes.length > 1 && <span className="c">{scratchPanes.length}</span>}
+                  <button className="x" title="Đóng tác vụ nháp và mọi terminal của nó"
+                          onClick={(e) => { e.stopPropagation(); closeTask(scratch.id); }}>×</button>
+                </div>
+              )}
+            </div>
+          )}
+
           {sideOpen && (
             <div className="head">
               <h2>Workspace</h2>
@@ -708,6 +767,8 @@ export default function App() {
               đổi qua lại mà không cần bung ra. */}
           {!sideOpen && (
             <div className="mini-list">
+              <button className={"mini-ws term" + (wsId === SCRATCH ? " on" : "")} onClick={openScratch}
+                      title="Mở nhanh một terminal ở thư mục nhà (Ctrl+`)">&gt;_</button>
               <button className="mini-ws add" onClick={addWorkspace} title="Add a workspace (pick a folder)">+</button>
               {visibleWs.map((w) => (
                 <button key={w.id} className={"mini-ws" + (w.id === wsId ? " on" : "")}
@@ -795,8 +856,8 @@ export default function App() {
                             <button className="x" title="Add a terminal to this task"
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      const w = workspaces.find((x) => x.id === t.wsId);
-                                      if (w) { setTaskId(t.id); addPane(t.wt?.path ?? w.path, t.id); }
+                                      setTaskId(t.id);
+                                      addPane(taskDir(t), t.id);
                                     }}>+</button>
                             <button className="x" title="Close the task and all its terminals"
                                     onClick={(e) => { e.stopPropagation(); closeTask(t.id); }}>×</button>
@@ -822,7 +883,7 @@ export default function App() {
             <>
               <div className="toolbar">
                 <span className="title">{task ? task.name : ws ? label(ws) : "No workspace selected"}</span>
-                <span className="path">{ws ? shortPath(ws.path) : ""}</span>
+                <span className="path">{wsId === SCRATCH ? "~" : ws ? shortPath(ws.path) : ""}</span>
                 {task?.wt && (
                   <>
                     <span className="branch" title={`Working in ${task.wt.path}, on a branch cut from ${task.wt.base}`}>
@@ -850,18 +911,22 @@ export default function App() {
               {shown.length === 0 && (
                 <div className="empty-main">
                   <div>
-                    {!ws ? (
-                      <p>Add a workspace on the left to get started.</p>
-                    ) : !task ? (
+                    {task ? (
+                      <>
+                        <p>Task “{task.name}” has no terminals left.</p>
+                        <button className="btn primary" onClick={() => addPane(taskDir(task), task.id)}>+ Terminal</button>
+                      </>
+                    ) : !ws ? (
+                      <>
+                        <p>Add a workspace on the left to get started.</p>
+                        <p className="s">Hoặc mở ngay một terminal ở thư mục nhà, không cần workspace nào.</p>
+                        <button className="btn primary" onClick={openScratch}>+ Quick terminal</button>
+                      </>
+                    ) : (
                       <>
                         <p>{label(ws)} has no tasks yet.</p>
                         <p className="s">A task is one thing you are working on — and the terminals doing it.</p>
                         <button className="btn primary" onClick={() => setNewTaskWs(ws)}>+ New task</button>
-                      </>
-                    ) : (
-                      <>
-                        <p>Task “{task.name}” has no terminals left.</p>
-                        <button className="btn primary" onClick={() => addPane(task.wt?.path ?? cwd, task.id)}>+ Terminal</button>
                       </>
                     )}
                   </div>
