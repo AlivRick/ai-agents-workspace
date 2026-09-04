@@ -12,12 +12,28 @@ export type Slot = string;
  * Only Claude Code reports progress back to the app: the status chips come from
  * Claude's hooks, which the other CLIs do not have.
  */
-export const AGENTS: { id: Slot; name: string; cmd: string; note: string; live: boolean }[] = [
-  { id: "claude", name: "Claude Code", cmd: "claude", note: "Runs `claude`, reports status back.", live: true },
-  { id: "codex", name: "Codex", cmd: "codex", note: "Runs the `codex` CLI.", live: false },
-  { id: "terminal", name: "Terminal", cmd: "", note: "Just a shell — you type.", live: false },
+export const AGENTS: { id: Slot; name: string; cmd: string; note: string; live: boolean; icon: string; tint: string }[] = [
+  { id: "claude", name: "Claude Code", cmd: "claude", note: "Runs `claude`, reports status back.", live: true,
+    icon: "M12 2.6v18.8M4 7.3l16 9.4M20 7.3L4 16.7", tint: "#d97757" },
+  { id: "codex", name: "Codex", cmd: "codex", note: "Runs the `codex` CLI.", live: false,
+    icon: "M12 3a9 9 0 100 18 9 9 0 000-18zM12 8.2a3.8 3.8 0 100 7.6 3.8 3.8 0 000-7.6z", tint: "#10a37f" },
+  { id: "terminal", name: "Terminal", cmd: "", note: "Just a shell — you type.", live: false,
+    icon: "M4 17l6-5-6-5M12.5 17.5H20", tint: "" },
 ];
-export const agentName = (id: Slot) => AGENTS.find((a) => a.id === id)?.name ?? id;
+const agentOf = (id: Slot) => AGENTS.find((a) => a.id === id);
+export const agentName = (id: Slot) => agentOf(id)?.name ?? id;
+
+/** The mark that says which CLI a terminal — or a whole task — is running.
+ *  Tinted with the agent's own colour so it reads at 13px without a label. */
+export function AgentIcon({ agent, size = 13 }: { agent: Slot; size?: number }) {
+  const a = agentOf(agent);
+  if (!a) return null;
+  return (
+    <svg className="agent-ic" width={size} height={size} viewBox="0 0 24 24" fill="none"
+         stroke={a.tint || "currentColor"} strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"
+         aria-label={a.name}><title>{a.name}</title><path d={a.icon} /></svg>
+  );
+}
 
 export type TaskSpec = { name: string; slots: Slot[]; runtime: string; prompt: string; continueLast: boolean };
 
@@ -91,7 +107,7 @@ export default function TaskSheet({
             {AGENTS.map((a) => (
               <button key={a.id} className={"pick-card" + (slots.every((s) => s === a.id) ? " on" : "")}
                       onClick={() => setAll(a.id)}>
-                <b>{a.name}{a.live && <em>live status</em>}</b>
+                <b><AgentIcon agent={a.id} size={14} />{a.name}{a.live && <em>live status</em>}</b>
                 <i>{a.note}</i>
               </button>
             ))}
@@ -136,7 +152,7 @@ export default function TaskSheet({
           <div className="lbl">Will launch</div>
           <ol className="launch">
             {slots.map((s, i) => (
-              <li key={i}><span className="k">{i + 1}</span>{agentName(s)}
+              <li key={i}><span className="k">{i + 1}</span><AgentIcon agent={s} />{agentName(s)}
                 {s === "claude" && continueLast && <em>--continue</em>}
                 {s !== "terminal" && prompt.trim() && <em>with a prompt</em>}
               </li>

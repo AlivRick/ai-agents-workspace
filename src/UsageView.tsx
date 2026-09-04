@@ -3,6 +3,15 @@ import {
   api, blockTokens, clock, fmtDur, fmtInt, fmtTokens, fmtUsd, parseLimits, shortPath, until,
   type Block, type Limit, type Named, type UsageReport,
 } from "./api";
+import { AgentIcon } from "./TaskSheet";
+
+/** Which agent's numbers this tab is showing. Claude first: it is the one with
+ *  a quota window, real dollars and live limits, so it is what you open to. */
+const SOURCES = [
+  { id: "claude", name: "Claude Code", from: "~/.claude/projects", costed: true },
+  { id: "codex", name: "Codex", from: "~/.codex/sessions", costed: false },
+] as const;
+type Source = (typeof SOURCES)[number]["id"];
 
 const RANGES: [string, string][] = [["today", "Today"], ["7d", "7 days"], ["30d", "30 days"], ["all", "All time"]];
 /* Slots 1–3 of the validated categorical palette; a 4th model folds into one
@@ -32,6 +41,7 @@ function fillDays(rows: Named[], cap = 45) {
 }
 
 export default function UsageView({ runtime }: { runtime: string }) {
+  const [source, setSource] = useState<Source>("claude");
   const [range, setRange] = useState("7d");
   const [metric, setMetric] = useState<Metric>("output");
   const [rep, setRep] = useState<UsageReport | null>(null);
@@ -47,7 +57,11 @@ export default function UsageView({ runtime }: { runtime: string }) {
     let live = true;
     const load = (first: boolean) => {
       if (first) setBusy(true);
-      Promise.all([api.usageReport(range, runtime), api.usageBlocks(runtime).catch(() => [] as Block[])])
+      const report = source === "codex" ? api.codexReport(range, runtime) : api.usageReport(range, runtime);
+      // Cửa sổ quota 5 giờ là khái niệm của Claude; Codex không có, nên tab
+      // Codex không vẽ thẻ đó thay vì vẽ một thẻ rỗng.
+      const blocks = source === "claude" ? api.usageBlocks(runtime).catch(() => [] as Block[]) : Promise.resolve([]);
+      Promise.all([report, blocks])
         .then(([r, b]) => {
           if (!live) return;
           setRep(r);
@@ -62,20 +76,31 @@ export default function UsageView({ runtime }: { runtime: string }) {
       live = false;
       clearInterval(t);
     };
-  }, [range, runtime, force]);
+  }, [range, runtime, force, source]);
 
+  const src = SOURCES.find((s) => s.id === source)!;
+  // Codex ghi token chứ không ghi tiền. Ép về "token ra" thay vì bày một biểu
+  // đồ chi phí toàn số 0.
+  const metricNow: Metric = src.costed ? metric : "output";
   const days = useMemo(() => fillDays(rep?.byDay ?? []), [rep]);
-  const peak = Math.max(...days.map((d) => d[metric === "cost" ? "cost" : "output"]), 1);
-  const m = METRIC[metric];
+  const peak = Math.max(...days.map((d) => d[metricNow === "cost" ? "cost" : "output"]), 1);
+  const m = METRIC[metricNow];
   const t = rep?.total;
-  const value = (b: Named) => (metric === "cost" ? b.costUsd : b.output);
+  const value = (b: Named) => (metricNow === "cost" ? b.costUsd : b.output);
 
   return (
     <>
       <div className="toolbar">
         <span className="title">Usage</span>
-        <span className="path">read from ~/.claude/projects{at ? ` · updated ${clock(at)}` : ""}</span>
+        <span className="path">read from {src.from}{at ? ` · updated ${clock(at)}` : ""}</span>
         <span className="sp" />
+        <div className="seg" title="Whose usage to show">
+          {SOURCES.map((s) => (
+            <button key={s.id} className={source === s.id ? "on" : ""} onClick={() => setSource(s.id)}>
+              <AgentIcon agent={s.id} size={12} />{s.name}
+            </button>
+          ))}
+        </div>
         <button className="btn" onClick={() => setForce((n) => n + 1)} disabled={busy}>
           {busy ? "Reading…" : "Refresh"}
         </button>
@@ -91,10 +116,17 @@ export default function UsageView({ runtime }: { runtime: string }) {
           {busy && !rep ? (
             <div className="hint">Scanning transcripts…</div>
           ) : !t || t.sessions === 0 ? (
-            <div className="hint">No sessions in this range.</div>
+            <div className="hint">
+              No {src.name} sessions in this range.
+              {source === "codex" && (
+                <><br />Agentspace reads Codex's own rollout files under <code>~/.codex/sessions/</code> —
+                  nothing there yet means Codex has not run on this machine (or is running under the
+                  other runtime).</>
+              )}
+            </div>
           ) : (
             <>
-              <BlockCard blocks={blocks} runtime={runtime} force={force} />
+              {source === "claude" && <BlockCard blocks={blocks} runtime={runtime} force={force} />}
 
               <div className="tiles">
                 <Tile k="Output tokens" v={fmtTokens(t.output)} s={`${fmtInt(t.sessions)} sessions`} />
@@ -102,18 +134,20 @@ export default function UsageView({ runtime }: { runtime: string }) {
                 <Tile k="Messages" v={fmtInt(t.messages)} s={`${fmtInt(Math.round(t.messages / Math.max(t.sessions, 1)))} / session`} />
                 <Tile k="Lines of code" v={`+${fmtInt(t.linesAdded)}`} s={`−${fmtInt(t.linesRemoved)}`} />
                 <Tile k="Time" v={fmtDur(t.durationMs)} s="across all sessions" />
-                <Tile
-                  k="Cost"
-                  v={fmtUsd(t.costUsd)}
-                  s={
-                    t.costSessions < t.sessions
-                      ? `only ${t.costSessions}/${t.sessions} sessions recorded`
-                      : "every session recorded"
-                  }
-                />
+                {src.costed && (
+                  <Tile
+                    k="Cost"
+                    v={fmtUsd(t.costUsd)}
+                    s={
+                      t.costSessions < t.sessions
+                        ? `only ${t.costSessions}/${t.sessions} sessions recorded`
+                        : "every session recorded"
+                    }
+                  />
+                )}
               </div>
 
-              {t.costSessions < t.sessions && (
+              {src.costed && t.costSessions < t.sessions && (
                 <p className="note">
                   Claude Code only writes a <code>cost-state</code> record for some sessions, so the
                   dollar figure is a lower bound. Tokens are summed per message and are always complete —
@@ -128,18 +162,20 @@ export default function UsageView({ runtime }: { runtime: string }) {
                       <h3>{m.label} per day</h3>
                       <div className="sub">last {days.length} days · peak {m.fmt(peak)}</div>
                     </div>
-                    <div className="seg">
-                      {(["output", "cost"] as Metric[]).map((k) => (
-                        <button key={k} className={metric === k ? "on" : ""} onClick={() => setMetric(k)}>
-                          {METRIC[k].label}
-                        </button>
-                      ))}
-                    </div>
+                    {src.costed && (
+                      <div className="seg">
+                        {(["output", "cost"] as Metric[]).map((k) => (
+                          <button key={k} className={metricNow === k ? "on" : ""} onClick={() => setMetric(k)}>
+                            {METRIC[k].label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <div className="chart">
                     <div className="gridline" style={{ top: 18 }} />
                     {days.map((d) => {
-                      const v = metric === "cost" ? d.cost : d.output;
+                      const v = metricNow === "cost" ? d.cost : d.output;
                       return (
                         <div className="bar" key={d.key}>
                           {v === peak && <span className="lab">{m.fmt(peak)}</span>}
@@ -168,7 +204,8 @@ export default function UsageView({ runtime }: { runtime: string }) {
                     value: value(x),
                     text: m.fmt(value(x)),
                     color: SERIES[i] ?? "var(--series-other)",
-                    note: `${fmtTokens(x.input + x.cacheCreate)} in · ${fmtTokens(x.output)} out · ${fmtUsd(x.costUsd)}`,
+                    note: `${fmtTokens(x.input + x.cacheCreate)} in · ${fmtTokens(x.output)} out`
+                      + (src.costed ? ` · ${fmtUsd(x.costUsd)}` : ""),
                   }))}
                 />
               </div>

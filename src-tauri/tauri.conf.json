@@ -18,7 +18,8 @@
         "minWidth": 960,
         "minHeight": 600,
         "decorations": true,
-        "theme": "Dark"
+        "theme": "Dark",
+        "dragDropEnabled": false
       }
     ],
     "security": {
@@ -38,8 +39,8 @@
     ],
     "publisher": "HUTECH",
     "copyright": "© HUTECH",
-    "shortDescription": "Quản lý workspace và phiên Claude Code",
-    "longDescription": "Agentspace — desktop app quản lý workspace, phiên, skill, memory và mức sử dụng cho Claude Code. Chạy chính binary claude đã cài trên máy bạn, bằng tài khoản của bạn.",
+    "shortDescription": "Run your coding agents side by side",
+    "longDescription": "Agentspace — a desktop app that runs Claude Code, Codex and plain shells side by side, grouped into tasks per workspace, with the skills, memory and usage behind them. It runs the CLIs already installed on your machine, under your own account.",
     "windows": {
       "nsis": {
         "installerIcon": "icons/icon.ico",

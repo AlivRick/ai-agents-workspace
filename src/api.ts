@@ -102,6 +102,9 @@ export const api = {
   setTheme: (theme: string) => invoke<void>("set_theme", { theme }),
   usageReport: (range: string, runtime?: string) =>
     invoke<UsageReport>("usage_report", { range, tzOffsetMin: new Date().getTimezoneOffset(), runtime }),
+  /** Same shape, read from Codex's rollout files. Always costless. */
+  codexReport: (range: string, runtime?: string) =>
+    invoke<UsageReport>("codex_report", { range, tzOffsetMin: new Date().getTimezoneOffset(), runtime }),
   ptyOpen: (id: string, cwd: string, cols: number, rows: number, runtime = "host", shellIntegration = true) =>
     invoke<void>("pty_open", { id, cwd, cols, rows, shellIntegration, runtime }),
   ptyWrite: (id: string, data: string) => invoke<void>("pty_write", { id, data }),

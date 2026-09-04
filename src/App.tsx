@@ -9,7 +9,7 @@ import ImportSheet from "./ImportSheet";
 import SettingsView from "./SettingsView";
 import UsageView from "./UsageView";
 import WorkspaceView, { TABS as WS_TABS, type Tab as WsTab } from "./WorkspaceView";
-import TaskSheet, { AGENTS, agentName, type Slot, type TaskSpec } from "./TaskSheet";
+import TaskSheet, { AGENTS, AgentIcon, agentName, type Slot, type TaskSpec } from "./TaskSheet";
 import { applyTheme, themeById } from "./themes";
 import { reorder } from "./reorder";
 import { loudest, quote, type Status } from "./task";
@@ -81,6 +81,10 @@ export default function App() {
   const [showBlocks, setShowBlocks] = useState<string | null>(null);
   const [showTodos, setShowTodos] = useState<string | null>(null);
   const [zoom, setZoom] = useState<string | null>(null);
+  /** Column and row weights per task, so a terminal you widened stays wide.
+   *  Keyed by task; a task whose terminal count changed falls back to equal. */
+  const [sizes, setSizes] = useState<Record<string, { cols: number[]; rows: number[] }>>({});
+  const grid = useRef<HTMLDivElement>(null);
   const [naming, setNaming] = useState<{ id: string; value: string } | null>(null);
   const [today, setToday] = useState({ costUsd: 0, output: 0 });
   const [block, setBlock] = useState<Block | null>(null);
@@ -210,6 +214,7 @@ export default function App() {
           setPanes(list);
         }
         setTasks(saved);
+        if (l?.sizes && typeof l.sizes === "object") setSizes(l.sizes);
         if (l?.wsId) setWsId(l.wsId);
         if (l?.taskId && saved.some((t) => t.id === l.taskId)) setTaskId(l.taskId);
         else setTaskId(saved[0]?.id ?? null);
@@ -233,10 +238,10 @@ export default function App() {
   // part that is actually persisted changes.
   const layoutKey = useMemo(
     () => JSON.stringify({
-      wsId, taskId, tasks,
+      wsId, taskId, tasks, sizes,
       panes: panes.map((p) => [p.id, p.taskId, p.cwd, p.runtime, p.sessionId ?? "", p.name ?? "", p.agent]),
     }),
-    [wsId, taskId, tasks, panes],
+    [wsId, taskId, tasks, sizes, panes],
   );
   useEffect(() => {
     if (!layoutLoaded) return;
@@ -245,6 +250,7 @@ export default function App() {
       wsId: l.wsId,
       taskId: l.taskId,
       tasks: l.tasks,
+      sizes: l.sizes,
       panes: l.panes.map(([id, tid, cwd, runtime, sessionId, name, agent]: string[]) => ({
         id, taskId: tid, cwd, runtime, agent, sessionId: sessionId || undefined, name: name || undefined,
       })),
@@ -353,6 +359,11 @@ export default function App() {
       void getCurrentWindow().requestUserAttention(UserAttentionType.Informational);
     }
   }, [panes, notify]);
+
+  /** A task shows the agent it is actually running: the first non-shell one,
+   *  because a Claude + two shells workbench is a Claude task. */
+  const taskAgent = (list: PaneInfo[]): Slot =>
+    list.find((p) => p.agent !== "terminal")?.agent ?? "terminal";
 
   const paneName = (p: PaneInfo) => p.name || shortPath(p.cwd).split(/[/\\]/).pop() || "pane";
 
@@ -515,6 +526,48 @@ export default function App() {
   // panes, which is what a screen holds; a resizable tree is the upgrade if
   // that stops being enough.
   const cols = shown.length <= 1 ? 1 : shown.length <= 2 ? 2 : shown.length <= 4 ? 2 : 3;
+  const rows = Math.max(Math.ceil(shown.length / cols), 1);
+  // A saved split only applies while the grid still has that shape; add or
+  // close a terminal and the weights go back to equal rather than to garbage.
+  const fit = (a: number[] | undefined, n: number) => (a?.length === n ? a : Array(n).fill(1));
+  const colFr = fit(sizes[taskId ?? ""]?.cols, cols);
+  const rowFr = fit(sizes[taskId ?? ""]?.rows, rows);
+
+  /** Drag the gutter after column/row `i`. Weights move between the two cells
+   *  that touch it, so the grid keeps its total size and nothing else shifts. */
+  const startResize = (e: React.PointerEvent, axis: "x" | "y", i: number) => {
+    const el = grid.current;
+    if (!el || !taskId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const vertical = axis === "y";
+    const total = vertical ? el.clientHeight : el.clientWidth;
+    const base = vertical ? rowFr : colFr;
+    const sum = base.reduce((a, b) => a + b, 0);
+    const px = base.map((f) => (f / sum) * total);
+    const from = vertical ? e.clientY : e.clientX;
+    const MIN = 140;
+    const move = (ev: PointerEvent) => {
+      const raw = (vertical ? ev.clientY : ev.clientX) - from;
+      const d = Math.max(MIN - px[i], Math.min(px[i + 1] - MIN, raw));
+      const next = px.slice();
+      next[i] += d;
+      next[i + 1] -= d;
+      const fr = next.map((v) => (v / total) * sum);
+      setSizes((all) => ({
+        ...all,
+        [taskId]: { cols: vertical ? colFr : fr, rows: vertical ? fr : rowFr },
+      }));
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+  /** Double-click a gutter: back to an even split. */
+  const evenSplit = () => taskId && setSizes(({ [taskId]: _drop, ...rest }) => rest);
   const attention = panes.filter((p) => p.status === "att").length;
   const waiting = panes
     .filter((p) => p.status === "att" || p.status === "done")
@@ -612,12 +665,15 @@ export default function App() {
             {visibleWs.map((w, i) => {
               const g = git[w.path];
               const mine = tasks.filter((t) => t.wsId === w.id);
-              const open = w.id === wsId;
+              // Ghim = luôn bày tác vụ ra, kể cả khi bạn đang làm ở workspace
+              // khác. Đó là điểm của việc ghim: hai ba dự án chạy song song thì
+              // phải thấy được cả hai mà không phải bấm qua bấm lại.
+              const open = w.id === wsId || w.favorite;
               return (
                 <div key={w.id}>
                   {i === firstUnpinned && i > 0 && <div className="sep" />}
                   <div className={"ws" + (open ? " on" : "")} onClick={() => setWsId(w.id)} title={w.path}>
-                    <button className={"pin" + (w.favorite ? " on" : "")} title={w.favorite ? "Unpin" : "Pin to top"}
+                    <button className={"pin" + (w.favorite ? " on" : "")} title={w.favorite ? "Unpin" : "Pin to top and keep its tasks listed"}
                             onClick={(e) => { e.stopPropagation(); togglePin(w); }}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill={w.favorite ? "currentColor" : "none"}
                            stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"><path d={PIN} /></svg>
@@ -637,8 +693,9 @@ export default function App() {
                         const [cls] = STATUS[loudest(its.map((p) => p.status))];
                         return (
                           <div key={t.id} className={"task" + (t.id === taskId ? " on" : "")}
-                               onClick={() => { setTaskId(t.id); setView("code"); }}>
+                               onClick={() => { setWsId(t.wsId); setTaskId(t.id); setView("code"); }}>
                             <span className={"dot " + cls} />
+                            <AgentIcon agent={taskAgent(its)} />
                             {renaming?.id === t.id ? (
                               <input className="rename" autoFocus value={renaming.value}
                                      onClick={(e) => e.stopPropagation()}
@@ -724,14 +781,18 @@ export default function App() {
                   terminal nào. Trước đây nó bị tháo ra lúc rỗng — mà tháo là
                   chạy cleanup của Pane, tức là giết PTY của *mọi* tác vụ khác:
                   chuyển sang một workspace chưa có tác vụ là Claude chết sạch. */}
-              <div className="grid"
+              <div className="grid" ref={grid}
                    style={{
-                     gridTemplateColumns: `repeat(${zoom ? 1 : cols}, minmax(0, 1fr))`,
+                     gridTemplateColumns: zoom ? "minmax(0, 1fr)" : colFr.map((f) => `${f}fr`).join(" "),
+                     gridTemplateRows: zoom ? "minmax(0, 1fr)" : rowFr.map((f) => `minmax(0, ${f}fr)`).join(" "),
                      display: shown.length === 0 ? "none" : undefined,
                    }}>
                   {panes.map((p) => {
                     const [cls, statusLabel] = STATUS[p.status];
                     const hidden = p.taskId !== taskId || (zoom !== null && zoom !== p.id);
+                    const at = shown.findIndex((x) => x.id === p.id);
+                    const col = at % cols;
+                    const row = Math.floor(at / cols);
                     return (
                       <section key={p.id}
                                className={"pane" + (focus === p.id ? " focus" : "") + (overPane === p.id ? " over" : "")}
@@ -751,6 +812,7 @@ export default function App() {
                                   if (dragPane.current) movePane(dragPane.current, p.id);
                                   dragPane.current = null; setOverPane(null);
                                 }}>
+                          <AgentIcon agent={p.agent} />
                           {naming?.id === p.id ? (
                             <input className="rename" autoFocus value={naming.value}
                                    placeholder={shortPath(p.cwd).split(/[/\\]/).pop()}
@@ -824,6 +886,14 @@ export default function App() {
                             if (b.marker) terms.current[p.id]?.scrollToLine(Math.max(b.marker.line - 2, 0));
                             setShowBlocks(null);
                           }} />
+                        )}
+                        {!zoom && col < cols - 1 && (
+                          <span className="rs x" title="Drag to resize · double-click to even out"
+                                onPointerDown={(e) => startResize(e, "x", col)} onDoubleClick={evenSplit} />
+                        )}
+                        {!zoom && row < rows - 1 && (
+                          <span className="rs y" title="Drag to resize · double-click to even out"
+                                onPointerDown={(e) => startResize(e, "y", row)} onDoubleClick={evenSplit} />
                         )}
                         <Pane
                           id={p.id} cwd={p.cwd} runtime={p.runtime} focused={focus === p.id} palette={theme.term}

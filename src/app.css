@@ -569,3 +569,20 @@ table.plain td.mono { font-family: var(--mono); }
   font-style: normal; font-size: 10px; color: var(--accent); border: 1px solid var(--line);
   border-radius: 20px; padding: 0 6px;
 }
+
+/* Dấu nhận diện agent: đứng trước tên tác vụ và tên terminal, tô đúng màu của
+   CLI đó nên đọc được ở 13px mà không cần chữ. */
+.agent-ic { flex: none; opacity: .9; }
+.task .agent-ic, .pane .ph .agent-ic { margin-right: -2px; }
+.pick-card b .agent-ic { opacity: 1; }
+.launch li .agent-ic { opacity: .8; }
+
+/* Kéo mép phải / mép dưới của pane để đổi tỉ lệ cột và hàng. Tay cầm nằm đè
+   lên khe 1px giữa hai pane, nên nó không ăn mất chỗ của terminal. */
+.pane .rs { position: absolute; z-index: 15; background: transparent; transition: background .12s; }
+.pane .rs.x { top: 30px; bottom: 0; right: -3px; width: 7px; cursor: col-resize; }
+.pane .rs.y { left: 0; right: 0; bottom: -3px; height: 7px; cursor: row-resize; }
+.pane .rs:hover, .pane .rs:active { background: var(--accent); }
+
+/* Nút chọn agent trong tab Mức dùng: icon đứng trước tên. */
+.seg button { display: inline-flex; align-items: center; gap: 5px; }

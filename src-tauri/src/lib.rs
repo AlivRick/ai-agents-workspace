@@ -1,3 +1,4 @@
+mod codex;
 mod engine;
 mod notify;
 mod sessions;
@@ -42,6 +43,18 @@ impl App {
             Some(d) => match self.wsl_home(d) {
                 Some(home) => wsl::unc(d, &format!("{home}/.claude")),
                 None => util::claude_home().unwrap_or_default(),
+            },
+        }
+    }
+
+    /// Where the Codex CLI keeps its rollout files, for the same runtime the
+    /// rest of the app is reading.
+    fn codex_dir(&self, runtime: &str) -> PathBuf {
+        match wsl::distro_of(runtime) {
+            None => util::home_dir().unwrap_or_default().join(".codex"),
+            Some(d) => match self.wsl_home(d) {
+                Some(home) => wsl::unc(d, &format!("{home}/.codex")),
+                None => util::home_dir().unwrap_or_default().join(".codex"),
             },
         }
     }
@@ -317,6 +330,20 @@ async fn scan_sessions(app: State<'_, App>, runtime: Option<String>) -> Result<V
     Ok(slim(found))
 }
 
+/// The same report shape as `usage_report`, read from Codex's own rollout
+/// files instead of Claude's transcripts. Dollars are always zero: Codex
+/// records none, and a made-up price would be worse than a blank.
+#[tauri::command]
+async fn codex_report(
+    app: State<'_, App>,
+    range: String,
+    tz_offset_min: i32,
+    runtime: Option<String>,
+) -> Result<sessions::UsageReport, String> {
+    let dir = app.codex_dir(&rt(runtime));
+    blocking(move || sessions::usage(&codex::scan(&dir), &range, tz_offset_min)).await
+}
+
 #[tauri::command]
 async fn usage_report(
     app: State<'_, App>,
@@ -578,6 +605,7 @@ pub fn run() {
             set_runtime,
             get_theme,
             set_theme,
+            codex_report,
             save_layout,
             load_layout,
             scan_sessions,

@@ -98,8 +98,8 @@ export default function ImportSheet({
     <div className="modal" onClick={onCancel}>
       <div className="sheet" onClick={(e) => e.stopPropagation()}>
         <header>
-          <b>Import workspaces from Claude Code</b>
-          <span className="path">{byKey.size} folders · click ▸ to open a branch</span>
+          <b>Import workspaces</b>
+          <span className="path">{byKey.size} folders your agents have worked in · click ▸ to open a branch</span>
           <span className="sp" />
           <button className="btn ghost"
                   onClick={() => setOpen(new Set([...byKey.keys()].flatMap((p) =>
