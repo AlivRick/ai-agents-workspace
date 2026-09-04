@@ -56,7 +56,7 @@ fn rt_path(runtime: &str, p: &str) -> String {
 /// needs the user's PATH, and rc-file chatter lands on stdout in the middle of
 /// whatever it printed. A diff parsed out of that is a diff with someone's
 /// motd in it. `git` is on the default PATH of every distro that has it.
-fn git(runtime: &str, dir: &str, args: &[&str]) -> Result<String, String> {
+pub fn git(runtime: &str, dir: &str, args: &[&str]) -> Result<String, String> {
     let dir = rt_path(runtime, dir);
     let out = if let Some(distro) = crate::wsl::distro_of(runtime) {
         let mut a: Vec<&str> = vec!["-d", distro, "--", "git", "-C", &dir];

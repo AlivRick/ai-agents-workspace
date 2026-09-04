@@ -261,8 +261,9 @@ fn update_workspace(
 }
 
 #[tauri::command]
-async fn git_info(paths: Vec<String>) -> Result<Vec<store::GitInfo>, String> {
-    blocking(move || store::git_info(paths)).await
+async fn git_info(paths: Vec<String>, runtime: Option<String>) -> Result<Vec<store::GitInfo>, String> {
+    let r = rt(runtime);
+    blocking(move || store::git_info(paths, &r)).await
 }
 
 // ------------------------------------------------------------------ worktrees

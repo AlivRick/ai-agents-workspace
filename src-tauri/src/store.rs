@@ -133,14 +133,16 @@ pub struct GitInfo {
     pub dirty: u32,
 }
 
-fn git(path: &str, args: &[&str]) -> Option<String> {
-    let out = crate::util::quiet_command("git").arg("-C").arg(path).args(args).output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-
 /// Branch + dirty-file count for many folders at once, fanned out so a slow
 /// disk does not serialise the whole sidebar.
-pub fn git_info(paths: Vec<String>) -> Vec<GitInfo> {
+///
+/// Asked in the *runtime's* git, not the host's: a workspace inside WSL is
+/// stored as a POSIX path that Windows git cannot even open, so a host-side
+/// `git -C /home/…` said "not a repo" about every Linux workspace — and with
+/// it went the branch in the sidebar and the worktree option in the new-task
+/// sheet.
+pub fn git_info(paths: Vec<String>, runtime: &str) -> Vec<GitInfo> {
+    let git = |p: &str, args: &[&str]| crate::worktree::git(runtime, p, args).ok();
     let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8);
     let chunk = paths.len().div_ceil(workers).max(1);
     std::thread::scope(|scope| {

@@ -58,11 +58,16 @@ export default function TaskSheet({
   const [continueLast, setContinueLast] = useState(false);
   const [worktree, setWorktree] = useState(false);
   const [installed, setInstalled] = useState<string[] | null>(null);
+  /** Why the probe came back empty, when the backend said. */
+  const [probeErr, setProbeErr] = useState("");
 
   useEffect(() => {
     let live = true;
     setInstalled(null);
-    probe(rt).then((found) => live && setInstalled(found)).catch(() => live && setInstalled([]));
+    setProbeErr("");
+    probe(rt)
+      .then((found) => live && setInstalled(found))
+      .catch((e) => { if (live) { setInstalled([]); setProbeErr(String(e)); } });
     return () => { live = false; };
   }, [rt, probe]);
 
@@ -115,7 +120,7 @@ export default function TaskSheet({
           {installed?.length === 0 && (
             <div className="hint">Could not ask {runtimes.find((r) => r.id === rt)?.label ?? rt} which CLIs
               it has, so none of these is marked as missing. They still run — the terminal will say if one
-              is not there.</div>
+              is not there.{probeErr && <> <code>{probeErr}</code></>}</div>
           )}
           <div className="cards">
             {AGENTS.map((a) => (

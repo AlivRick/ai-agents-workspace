@@ -161,11 +161,19 @@ export default function App() {
     const list = await api.listWorkspaces();
     setWorkspaces(list);
     setWsId((cur) => (cur && list.some((w) => w.id === cur) ? cur : list[0]?.id ?? null));
-    if (list.length) {
-      const info = await api.gitInfo(list.map((w) => w.path));
-      setGit(Object.fromEntries(info.map((g) => [g.path, g])));
-    }
   }, []);
+
+  // Branch và số file đang đổi phải hỏi git *trong runtime đang chọn*: đường
+  // dẫn POSIX của một workspace WSL thì git của Windows không mở nổi, và mọi
+  // workspace Linux sẽ bị báo là "không phải repo" — mất branch ở thanh bên,
+  // mất luôn ô chọn worktree trong bảng tạo tác vụ. Đổi runtime là hỏi lại.
+  useEffect(() => {
+    const paths = workspaces.map((w) => w.path);
+    if (!paths.length) return;
+    api.gitInfo(paths, runtime)
+      .then((info) => setGit(Object.fromEntries(info.map((g) => [g.path, g]))))
+      .catch(() => {});
+  }, [workspaces, runtime]);
   // Runtime hiện tại, đọc được từ trong một promise đang bay. Bản quét trả về
   // muộn của runtime cũ mà ghi đè thì số liệu nhảy về của máy sai.
   const rtRef = useRef(runtime);
@@ -516,8 +524,6 @@ export default function App() {
       const list = await api.addWorkspace(dir);
       setWorkspaces(list);
       setWsId(list.find((w) => w.path === dir)?.id ?? wsId);
-      const info = await api.gitInfo([dir]);
-      setGit((g) => ({ ...g, [dir]: info[0] }));
     }
   };
 
@@ -526,8 +532,6 @@ export default function App() {
     setImportable(null);
     if (!paths.length) return;
     setWorkspaces(await api.addWorkspaces(paths));
-    const info = await api.gitInfo(paths);
-    setGit((g) => ({ ...g, ...Object.fromEntries(info.map((x) => [x.path, x])) }));
   };
 
   const togglePin = (w: Workspace) => api.updateWorkspace(w.id, { favorite: !w.favorite }).then(setWorkspaces);

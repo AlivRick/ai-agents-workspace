@@ -107,15 +107,24 @@ pub fn find_cli() -> Option<PathBuf> {
 
 /// The line the runtime's shell is asked to run.
 ///
-/// Two things here are load-bearing, both learned the hard way:
+/// Three things here are load-bearing, all learned the hard way:
 /// no double quote anywhere — `wsl.exe` is reached through a Windows command
-/// line and swallows them — and a trailing `true`, because the loop's exit
-/// status is that of the *last* `command -v`. Without it, an agent that is not
-/// installed makes the whole probe look like a failed command, and
-/// `wsl::run` throws the answer away: every agent then reads "not installed",
-/// including the one the user is looking at running in the next pane.
+/// line and swallows them; a trailing `true`, because the loop's exit status is
+/// that of the *last* `command -v`, and without it an agent that is not
+/// installed makes the whole probe look like a failed command and `wsl::run`
+/// throws the answer away; and the `$d/$c` sweep, because `command -v` only
+/// knows the PATH this particular shell happens to have. The install locations
+/// are the same ones `find_cli` searches for Claude — npm, bun, volta and the
+/// vendors' own installers all land in one of them.
 fn probe_script(names: &[&str]) -> String {
-    format!("for c in {}; do command -v $c >/dev/null 2>&1 && echo AS:$c; done; true", names.join(" "))
+    const DIRS: &str = "$HOME/.local/bin $HOME/.npm-global/bin $HOME/.bun/bin $HOME/.volta/bin \
+                        $HOME/.claude/local /usr/local/bin /opt/homebrew/bin /usr/bin";
+    format!(
+        "for c in {}; do if command -v $c >/dev/null 2>&1; then echo AS:$c; \
+         else for d in {}; do if [ -x $d/$c ]; then echo AS:$c; break; fi; done; fi; done; true",
+        names.join(" "),
+        DIRS,
+    )
 }
 
 /// The names out of a probe's output, in the order they were asked for.
@@ -170,14 +179,23 @@ pub fn which_bins(bins: &[String], runtime: &str) -> Vec<String> {
         return Vec::new();
     }
     let script = probe_script(&names);
-    let out = match wsl::distro_of(runtime) {
-        Some(d) => wsl::run(d, &script),
-        None if cfg!(windows) => {
-            return names.iter().filter(|n| on_path(n)).map(|n| n.to_string()).collect()
+    let parse = |out: Option<Vec<u8>>| found_in(&String::from_utf8_lossy(&out.unwrap_or_default()), &names);
+    match wsl::distro_of(runtime) {
+        Some(d) => {
+            // An interactive shell is asked first because that is the PATH the
+            // pane gets. But a shell can exit 0 and still print nothing useful
+            // — no tty, an rc file that bails early — and an empty answer is
+            // indistinguishable from "you have no agents". So when it finds
+            // nothing, ask again without the rc files rather than believe it.
+            let found = parse(wsl::run(d, &script));
+            if !found.is_empty() {
+                return found;
+            }
+            parse(wsl::exec(&["-d", d, "--", "sh", "-lc", &script]).ok().map(|o| o.stdout))
         }
-        None => host_probe(&script),
-    };
-    found_in(&String::from_utf8_lossy(&out.unwrap_or_default()), &names)
+        None if cfg!(windows) => names.iter().filter(|n| on_path(n)).map(|n| n.to_string()).collect(),
+        None => parse(host_probe(&script)),
+    }
 }
 
 fn parse_semver(s: &str) -> Option<(u32, u32, u32)> {
