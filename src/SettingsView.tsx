@@ -3,11 +3,12 @@ import { THEMES, type Theme } from "./themes";
 /** Grouped theme picker. Each row previews the palette it applies, so the
  *  choice is made by looking rather than by reading names. */
 export default function SettingsView({
-  current, onPick, restore, onRestore, notify, onNotify,
+  current, onPick, restore, onRestore, notify, onNotify, zoom, onZoom,
 }: {
   current: string; onPick: (id: string) => void;
   restore: boolean; onRestore: (on: boolean) => void;
   notify: boolean; onNotify: (on: boolean) => void;
+  zoom: number; onZoom: (dir: 1 | -1 | 0) => void;
 }) {
   const groups = [...new Set(THEMES.map((t) => t.group))];
   return (
@@ -18,6 +19,16 @@ export default function SettingsView({
       </div>
       <div className="scroll">
         <div className="usage">
+          <div className="card">
+            <h3>Text size</h3>
+            <div className="sub">scales the app and the terminals alike — Ctrl +, Ctrl −, Ctrl 0</div>
+            <div className="zoomer">
+              <button className="btn" onClick={() => onZoom(-1)} title="Smaller (Ctrl −)">−</button>
+              <b>{Math.round(zoom * 100)}%</b>
+              <button className="btn" onClick={() => onZoom(1)} title="Bigger (Ctrl +)">+</button>
+              <button className="btn ghost" onClick={() => onZoom(0)} disabled={zoom === 1}>Reset</button>
+            </div>
+          </div>
           <div className="card">
             <h3>Sessions</h3>
             <div className="sub">takes effect the next time you open the app</div>
