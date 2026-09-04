@@ -107,8 +107,18 @@ input { font: inherit; color: inherit; }
 }
 .ws:hover { background: var(--hover); }
 .ws.on { background: var(--raise); color: var(--text); }
-.ws .n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ws .b { font-size: 11px; color: var(--faint); font-family: var(--mono); flex: none; }
+/* The name wins the row. `min-width` is what makes that true: without a floor
+   under it the name has flex-basis 0 and gets only what the branch chip left
+   over, which on a long branch is four characters of the one string you cannot
+   guess. With a floor, the overflow falls on the chip, which shrinks instead. */
+.ws .n { flex: 1; min-width: 9ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws .b {
+  font-size: 11px; color: var(--faint); font-family: var(--mono); flex: 0 1 auto; min-width: 0;
+  display: flex; font-style: normal;
+}
+/* The branch is the half that may be cut; the dirty count never is. */
+.ws .b .br { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: normal; }
+.ws .b .dc { flex: none; font-style: normal; }
 .ws .x { opacity: 0; color: var(--faint); padding: 0 2px; }
 .ws:hover .x { opacity: 1; }
 .ws .x:hover { color: var(--danger); }
@@ -264,7 +274,7 @@ table.plain td.mono { font-family: var(--mono); }
         border-left: 2px solid var(--warn); border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; }
 .note code { font-family: var(--mono); color: var(--text); }
 .cardhead { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.ws .b { max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws .b { max-width: 96px; }
 
 /* ----------------------------------------------------------- ghim & rỗng */
 .ws { position: relative; }

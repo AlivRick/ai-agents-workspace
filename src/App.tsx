@@ -82,6 +82,8 @@ export default function App() {
   const [newTaskWs, setNewTaskWs] = useState<Workspace | null>(null);
   /** The task whose changes are open for review. */
   const [reviewId, setReviewId] = useState<string | null>(null);
+  /** Something the app could not finish and you have to know about. */
+  const [notice, setNotice] = useState<string>("");
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
   const [panes, setPanes] = useState<PaneInfo[]>([]);
   const dragPane = useRef<string | null>(null);
@@ -466,24 +468,28 @@ export default function App() {
   }, [addPane, agentCommand]);
 
   const closeTask = useCallback((id: string) => {
-    // A worktree outlives the task that made it on purpose: the terminals are
+    // A worktree outlives the task that made it, on purpose: the terminals are
     // disposable, the branch is the work. Closing here only stops asking about
-    // it — Review is where a branch actually gets merged or deleted.
-    const wt = now.current.tasks.find((t) => t.id === id)?.wt;
-    if (wt && !confirm(`Close this task? Its branch ${wt.branch} and worktree stay on disk — reopen a task there or clean them up with git.`))
-      return;
+    // it — Review is the only place a branch is merged or deleted.
     // Panes unmount with the task, and Pane's cleanup kills their PTYs — that
     // is the point: closing a task closes the terminals doing it.
     setPanes((all) => all.filter((p) => p.taskId !== id));
     setTasks((all) => all.filter((t) => t.id !== id));
   }, []);
 
-  /** The branch landed or went in the bin; either way the checkout is gone, so
-   *  the terminals still sitting in it have to go with it. */
-  const endWorktree = useCallback((id: string) => {
+  /** The branch landed or went in the bin; either way the checkout has to go —
+   *  and it can only go once nothing is standing in it. A shell whose cwd is
+   *  the worktree holds that directory open on Windows, so the terminals close
+   *  first and the removal waits for their PTYs to actually die. */
+  const endWorktree = useCallback(async (id: string, tree: Tree, rt: string) => {
     setReviewId(null);
     setPanes((all) => all.filter((p) => p.taskId !== id));
     setTasks((all) => all.filter((t) => t.id !== id));
+    // ponytail: a fixed wait, not a handshake — pty_close is fire-and-forget on
+    // both sides. The upgrade path is an event from Rust when the child reaps.
+    await new Promise((r) => setTimeout(r, 500));
+    await api.worktreeRemove(tree, true, rt).catch((e) =>
+      setNotice(`The branch is dealt with, but ${tree.path} is still on disk: ${e}`));
   }, []);
 
   const commitTaskName = () => {
@@ -621,6 +627,14 @@ export default function App() {
 
   return (
     <div className="app">
+      {notice && (
+        <div className="banner err">
+          <span>{notice}</span>
+          <span style={{ flex: 1 }} />
+          <button className="btn" onClick={() => setNotice("")}>Dismiss</button>
+        </div>
+      )}
+
       {engine?.problem && (
         <div className={"banner" + (engine.installed ? "" : " err")}>
           <span>{engine.problem}</span>
@@ -717,8 +731,20 @@ export default function App() {
                            stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"><path d={PIN} /></svg>
                     </button>
                     <span className="n">{label(w)}</span>
-                    {g?.isRepo && <span className="b">{g.branch}{g.dirty ? `·${g.dirty}` : ""}</span>}
-                    {mine.length > 0 && <span className="count">{mine.length}</span>}
+                    {/* Two elements, not one string: glued together, the dirty
+                        count is the tail of the text that gets ellipsised away,
+                        so it vanished on exactly the long branch names where
+                        you most want to know the repo is dirty. */}
+                    {g?.isRepo && (
+                      <span className="b" title={g.dirty ? `${g.branch} — ${g.dirty} file(s) changed` : g.branch}>
+                        <i className="br">{g.branch}</i>
+                        {g.dirty > 0 && <i className="dc">·{g.dirty}</i>}
+                      </span>
+                    )}
+                    {/* Only worth a badge while the tasks are hidden — once the
+                        list is open underneath, the number is counting things
+                        you can already see. */}
+                    {!open && mine.length > 0 && <span className="count">{mine.length}</span>}
                     <button className="x" title="New task in this workspace"
                             onClick={(e) => { e.stopPropagation(); setNewTaskWs(w); }}>+</button>
                     <button className="x" title="Remove from the list"
@@ -750,7 +776,9 @@ export default function App() {
                                 {t.name}
                               </span>
                             )}
-                            <span className="c">{its.length}</span>
+                            {/* "1" on a task with one terminal is noise on every
+                                row; the count only says something at two. */}
+                            {its.length > 1 && <span className="c">{its.length}</span>}
                             <button className="x" title="Add a terminal to this task"
                                     onClick={(e) => {
                                       e.stopPropagation();
@@ -989,7 +1017,7 @@ export default function App() {
         const rt = panes.find((p) => p.taskId === reviewId)?.runtime ?? runtime;
         return t?.wt ? (
           <DiffSheet tree={t.wt} name={t.name} runtime={rt} onClose={() => setReviewId(null)}
-                     onMerged={() => endWorktree(t.id)} onDiscarded={() => endWorktree(t.id)} />
+                     onDone={() => void endWorktree(t.id, t.wt!, rt)} />
         ) : null;
       })()}
 
