@@ -233,6 +233,12 @@ mod tests {
             vec!["-d", "Ubuntu", "--cd", "/mnt/c/code", "--", "/bin/bash", "--init-file", "/mnt/c/d/shell/bash-init.sh", "-i"]
         );
 
+        // "~" là cwd của terminal mở nhanh (không thuộc workspace nào): nó
+        // phải đi thẳng sang wsl.exe, vì `--cd ~` mới là "nhà của bạn trong
+        // distro". Dịch nó thành đường dẫn nào đó là mở sai chỗ.
+        let home = spawn_args("Ubuntu", "/bin/zsh", "~", r"C:\d\shell", false);
+        assert_eq!(home[3], "~");
+
         // Tắt shell integration thì không truyền --init-file.
         let c = spawn_args("Ubuntu", "/bin/bash", "/home/x", r"C:\d\shell", false);
         assert!(!c.iter().any(|s| s == "--init-file"));
