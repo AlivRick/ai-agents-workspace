@@ -13,6 +13,7 @@ import TaskSheet, { AgentIcon, type TaskSpec } from "./TaskSheet";
 import DiffSheet from "./DiffSheet";
 import { agentOf, allBins, launchArgs, launchCommand, type Slot } from "./agents";
 import { applyTheme, themeById } from "./themes";
+import { applyZoom, loadZoom, nextZoom, ZOOM_DEFAULT } from "./zoom";
 import { reorder } from "./reorder";
 import { loudest, type Status } from "./task";
 import {
@@ -112,6 +113,7 @@ export default function App() {
   // pane đó — `claude --resume <id>`. Mặc định bật vì đó là lý do có tuỳ chọn.
   const [restore, setRestore] = useState(() => localStorage.getItem("restore") !== "0");
   const [themeId, setThemeId] = useState(() => localStorage.getItem("theme") ?? "agentspace");
+  const [uiZoom, setUiZoom] = useState(loadZoom);
   // Guards the save-on-change effect: without it, the first render writes an
   // empty layout before load_layout has answered, and the restored panes are
   // gone. It only survived by invoke ordering, which is not a guarantee.
@@ -132,6 +134,27 @@ export default function App() {
     Object.values(terms.current).forEach((t) => { t.options.theme = theme.term; });
     localStorage.setItem("theme", theme.id);
   }, [theme]);
+
+  // ----------------------------------------------------------------- zoom
+  // Cùng lý do phải là layout effect như theme: cỡ chữ phải đúng ngay khung
+  // hình đầu tiên, không thì app nháy một nhịp ở cỡ mặc định mỗi lần mở.
+  useLayoutEffect(() => { applyZoom(uiZoom); }, [uiZoom]);
+
+  // Ctrl +/−/0 — đúng phím phóng to chữ của trình duyệt và của mọi terminal.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      // "=" là phím vật lý của "+" khi không giữ Shift; layout nào cũng gửi một
+      // trong hai, nên nhận cả hai thay vì đoán.
+      const dir = e.key === "+" || e.key === "=" ? 1 : e.key === "-" || e.key === "_" ? -1 : 0;
+      if (dir) setUiZoom((z) => nextZoom(z, dir));
+      else if (e.key === "0") setUiZoom(ZOOM_DEFAULT);
+      else return;
+      e.preventDefault();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // Escape closes whichever sheet is open, like every other dialog.
   useEffect(() => {
@@ -1072,7 +1095,8 @@ export default function App() {
           {view === "usage" && <UsageView runtime={runtime} />}
           {view === "settings" && (
             <SettingsView current={theme.id} onPick={pickTheme} restore={restore} onRestore={pickRestore}
-                          notify={notify} onNotify={pickNotify} />
+                          notify={notify} onNotify={pickNotify}
+                          zoom={uiZoom} onZoom={(d) => setUiZoom((z) => (d === 0 ? ZOOM_DEFAULT : nextZoom(z, d)))} />
           )}
         </main>
       </div>

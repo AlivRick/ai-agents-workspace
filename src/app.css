@@ -667,3 +667,8 @@ table.plain td.mono { font-family: var(--mono); }
 }
 .sheet header .plus { color: var(--done-fg); }
 .sheet header .minus { color: var(--err-fg); }
+
+/* Cỡ chữ: một hàng −/số/+ , đọc là biết bấm gì. */
+.zoomer { display: flex; align-items: center; gap: 8px; }
+.zoomer b { min-width: 48px; text-align: center; font-variant-numeric: tabular-nums; }
+.zoomer .btn:disabled { opacity: .4; cursor: default; }

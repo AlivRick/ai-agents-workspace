@@ -56,6 +56,9 @@ export default function Pane({
     // Ctrl+F belongs to the pane, not to the shell inside it: returning false
     // keeps xterm from forwarding the keystroke to the PTY.
     term.attachCustomKeyEventHandler((e) => {
+      // Phóng to chữ là việc của app, không phải của shell: nuốt phím ở đây
+      // rồi để listener trên window xử lý.
+      if (e.type === "keydown" && (e.ctrlKey || e.metaKey) && !e.altKey && "+=-_0".includes(e.key)) return false;
       if (e.type === "keydown" && e.ctrlKey && !e.altKey && e.key.toLowerCase() === "f") {
         setFind((f) => f ?? "");
         queueMicrotask(() => findBox.current?.focus());
