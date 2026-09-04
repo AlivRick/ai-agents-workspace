@@ -279,13 +279,38 @@ async fn worktree_create(
     blocking(move || worktree::create(&r, &repo, &name, &id, "as/")).await?
 }
 
-/// What the task changed, committed or not.
+/// What the task changed, committed or not, plus how far its branch has drifted.
 #[tauri::command]
-async fn worktree_changes(
+async fn worktree_review(
     runtime: Option<String>, tree: worktree::Tree,
-) -> Result<Vec<worktree::Change>, String> {
+) -> Result<worktree::Review, String> {
     let r = rt(runtime);
-    blocking(move || worktree::changes(&r, &tree.path, &tree.base)).await?
+    blocking(move || worktree::review(&r, &tree)).await?
+}
+
+/// Commit the task's work and leave it running.
+#[tauri::command]
+async fn worktree_commit(
+    runtime: Option<String>, tree: worktree::Tree, message: String,
+) -> Result<(), String> {
+    let r = rt(runtime);
+    blocking(move || worktree::commit(&r, &tree, &message)).await?
+}
+
+/// Pull the base branch's new commits into the task's worktree.
+#[tauri::command]
+async fn worktree_update(runtime: Option<String>, tree: worktree::Tree) -> Result<String, String> {
+    let r = rt(runtime);
+    blocking(move || worktree::update(&r, &tree)).await?
+}
+
+/// Push the task branch and open a pull request. Returns the PR's URL.
+#[tauri::command]
+async fn worktree_pr(
+    runtime: Option<String>, tree: worktree::Tree, title: String,
+) -> Result<String, String> {
+    let r = rt(runtime);
+    blocking(move || worktree::pull_request(&r, &tree, &title)).await?
 }
 
 #[tauri::command]
@@ -677,7 +702,10 @@ pub fn run() {
             update_workspace,
             git_info,
             worktree_create,
-            worktree_changes,
+            worktree_review,
+            worktree_commit,
+            worktree_update,
+            worktree_pr,
             worktree_diff,
             worktree_merge,
             worktree_remove,

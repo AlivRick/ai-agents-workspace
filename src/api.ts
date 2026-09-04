@@ -17,6 +17,10 @@ export type GitInfo = { path: string; isRepo: boolean; branch: string; dirty: nu
 export type Tree = { repo: string; path: string; branch: string; base: string };
 /** One file a task touched, committed or not. */
 export type Change = { path: string; status: string; added: number; removed: number; binary: boolean };
+/** Everything the review sheet reads in one call — files plus branch drift. */
+export type Review = {
+  files: Change[]; ahead: number; behind: number; dirty: boolean; canPr: boolean;
+};
 export type ModelUsage = { model: string; input: number; output: number; cacheRead: number; cacheCreate: number; costUsd: number };
 export type Session = {
   id: string; file: string; cwd: string; title: string; lastPrompt: string;
@@ -118,7 +122,12 @@ export const api = {
   ptyClose: (id: string) => invoke<void>("pty_close", { id }),
   worktreeCreate: (repo: string, name: string, id: string, runtime?: string) =>
     invoke<Tree>("worktree_create", { repo, name, id, runtime }),
-  worktreeChanges: (tree: Tree, runtime?: string) => invoke<Change[]>("worktree_changes", { tree, runtime }),
+  worktreeReview: (tree: Tree, runtime?: string) => invoke<Review>("worktree_review", { tree, runtime }),
+  worktreeCommit: (tree: Tree, message: string, runtime?: string) =>
+    invoke<void>("worktree_commit", { tree, message, runtime }),
+  worktreeUpdate: (tree: Tree, runtime?: string) => invoke<string>("worktree_update", { tree, runtime }),
+  worktreePr: (tree: Tree, title: string, runtime?: string) =>
+    invoke<string>("worktree_pr", { tree, title, runtime }),
   worktreeDiff: (tree: Tree, file: string, runtime?: string) =>
     invoke<string>("worktree_diff", { tree, file, runtime }),
   worktreeMerge: (tree: Tree, message: string, runtime?: string) =>

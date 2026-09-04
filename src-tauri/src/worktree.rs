@@ -39,6 +39,23 @@ pub struct Change {
     pub binary: bool,
 }
 
+/// What the review sheet needs to know beyond the file list: how far the task
+/// branch has drifted from its base, and which of the actions it offers are
+/// possible at all.
+#[derive(Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Review {
+    pub files: Vec<Change>,
+    /// Commits on the task branch the base does not have yet.
+    pub ahead: u32,
+    /// Commits the base has gained since the task branched — what Update pulls in.
+    pub behind: u32,
+    /// Work in the worktree nobody has committed.
+    pub dirty: bool,
+    /// A pull request is offerable at all: the repo has a remote and `gh` runs.
+    pub can_pr: bool,
+}
+
 // ------------------------------------------------------------------- plumbing
 
 /// A path as the runtime's own git will read it.
@@ -76,6 +93,40 @@ pub fn git(runtime: &str, dir: &str, args: &[&str]) -> Result<String, String> {
     }
     let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
     Err(if err.is_empty() { format!("git {} failed", args.join(" ")) } else { err })
+}
+
+/// `gh` in the worktree. Not folded into `git()`: gh has no `-C`, it reads the
+/// working directory, and it is the one binary here that may not be installed.
+fn gh(runtime: &str, dir: &str, args: &[&str]) -> Result<String, String> {
+    let dir = rt_path(runtime, dir);
+    let out = if let Some(distro) = crate::wsl::distro_of(runtime) {
+        let mut a: Vec<&str> = vec!["-d", distro, "--cd", &dir, "--", "gh"];
+        a.extend_from_slice(args);
+        crate::wsl::exec(&a).map_err(|e| e.to_string())?
+    } else {
+        crate::util::quiet_command("gh")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .map_err(|e| e.to_string())?
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if out.status.success() {
+        return Ok(stdout);
+    }
+    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    // gh says the useful half on stderr, including "a pull request already
+    // exists for this branch" and the URL of it.
+    Err(if err.is_empty() { stdout } else { err })
+}
+
+/// How many commits are in a rev range, and 0 for a range git cannot resolve —
+/// a missing base is a UI number, not an error worth failing the sheet over.
+fn count(runtime: &str, dir: &str, range: &str) -> u32 {
+    git(runtime, dir, &["rev-list", "--count", range])
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
 }
 
 /// The separator this path is already written with. A worktree path built with
@@ -201,6 +252,77 @@ pub fn file_diff(runtime: &str, tree: &str, base: &str, file: &str) -> Result<St
     git(runtime, tree, &["diff", "--no-color", "--no-renames", base, "--", file])
 }
 
+/// Everything the review sheet reads in one round trip: the files, the drift,
+/// and which buttons are worth showing.
+pub fn review(runtime: &str, t: &Tree) -> Result<Review, String> {
+    Ok(Review {
+        files: changes(runtime, &t.path, &t.base)?,
+        ahead: count(runtime, &t.path, &format!("{}..HEAD", t.base)),
+        behind: count(runtime, &t.path, &format!("HEAD..{}", t.base)),
+        dirty: !git(runtime, &t.path, &["status", "--porcelain"])?.is_empty(),
+        can_pr: !git(runtime, &t.repo, &["remote"]).unwrap_or_default().is_empty()
+            && gh(runtime, &t.path, &["--version"]).is_ok(),
+    })
+}
+
+/// Commit what the agents left, and leave the task running.
+///
+/// Merge has always done this as its first step, which made every task exactly
+/// one commit however long it ran — nothing to roll back to when the agent goes
+/// wrong at hour two. Same two git calls, offered on their own.
+pub fn commit(runtime: &str, t: &Tree, message: &str) -> Result<(), String> {
+    if git(runtime, &t.path, &["status", "--porcelain"])?.is_empty() {
+        return Err("Nothing to commit — the worktree is clean.".into());
+    }
+    git(runtime, &t.path, &["add", "-A"])?;
+    git(runtime, &t.path, &["commit", "-m", message])?;
+    Ok(())
+}
+
+/// Bring the base branch's new commits into the worktree.
+///
+/// Pulled this way round on purpose. Left alone, a task that ran while the base
+/// moved on only discovers the collision at Merge, and the conflict then lands
+/// in the user's own checkout mid-merge. Here it lands in the task's worktree,
+/// where an agent is already standing and can be told to resolve it, and the
+/// merge home afterwards is a fast-forward.
+pub fn update(runtime: &str, t: &Tree) -> Result<String, String> {
+    if !git(runtime, &t.path, &["status", "--porcelain"])?.is_empty() {
+        return Err("Commit this task's changes first — merging on top of uncommitted work leaves nothing to go back to.".into());
+    }
+    git(runtime, &t.path, &["merge", "--no-edit", &t.base]).map_err(|e| {
+        let stuck = git(runtime, &t.path, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
+        if stuck.is_empty() {
+            e
+        } else {
+            format!(
+                "Conflicts in {} — ask the agent in this task to resolve them, then Commit.",
+                stuck.lines().collect::<Vec<_>>().join(", ")
+            )
+        }
+    })
+}
+
+/// Push the task branch and open a pull request for it.
+///
+/// The body is the task's own commit subjects rather than `gh --fill`, which
+/// wants to own the title too. `gh pr view --web` is the opener: gh is already
+/// installed here by definition, so the app needs no browser plugin of its own,
+/// and a failure to open only means the user clicks the URL we return.
+pub fn pull_request(runtime: &str, t: &Tree, title: &str) -> Result<String, String> {
+    let range = format!("{}..HEAD", t.base);
+    if count(runtime, &t.path, &range) == 0 {
+        return Err("Nothing to open a pull request for — Commit the task's work first.".into());
+    }
+    let body = git(runtime, &t.path, &["log", "--format=- %s", &range])?;
+    git(runtime, &t.path, &["push", "-u", "origin", &t.branch])?;
+    let out = gh(runtime, &t.path, &[
+        "pr", "create", "--base", &t.base, "--head", &t.branch, "--title", title, "--body", &body,
+    ])?;
+    let _ = gh(runtime, &t.path, &["pr", "view", "--web"]);
+    Ok(out.lines().next_back().unwrap_or_default().trim().to_string())
+}
+
 /// Commit whatever the agents left lying around, then merge the branch back.
 ///
 /// The two refusals are the point: merging into a dirty checkout mixes the
@@ -209,16 +331,26 @@ pub fn file_diff(runtime: &str, tree: &str, base: &str, file: &str) -> Result<St
 /// the work somewhere nobody will look for it.
 pub fn merge(runtime: &str, t: &Tree, message: &str) -> Result<String, String> {
     if !git(runtime, &t.path, &["status", "--porcelain"])?.is_empty() {
-        git(runtime, &t.path, &["add", "-A"])?;
-        git(runtime, &t.path, &["commit", "-m", message])?;
+        commit(runtime, t, message)?;
     }
     if git(runtime, &t.path, &["rev-list", "--count", &format!("{}..HEAD", t.base)])? == "0" {
         return Err("Nothing to merge — this task changed nothing.".into());
     }
-    if !git(runtime, &t.repo, &["status", "--porcelain"])?.is_empty() {
+    // Naming the files matters: the repo is not the checkout the user has been
+    // looking at all session, so "it has uncommitted changes" alone sends them
+    // to a terminal to find out which.
+    let theirs = git(runtime, &t.repo, &["status", "--porcelain"])?;
+    if !theirs.is_empty() {
+        let n = theirs.lines().count();
+        let mut which: Vec<&str> = theirs.lines().take(3).map(|l| l[3..].trim()).collect();
+        if n > which.len() {
+            which.push("…");
+        }
         return Err(format!(
-            "{} has uncommitted changes of its own. Commit or stash them, then merge.",
-            t.repo
+            "The repo has {n} uncommitted change{} of its own ({}). Commit or stash {} there, then merge.",
+            if n == 1 { "" } else { "s" },
+            which.join(", "),
+            if n == 1 { "it" } else { "them" },
         ));
     }
     let head = branch_of(runtime, &t.repo).unwrap_or_default();
@@ -288,6 +420,26 @@ mod tests {
         assert_eq!((c[0].status.as_str(), c[0].added), ("M", 2));
         assert_eq!(c[1].status, "A");
         assert!(file_diff("host", &t.path, &t.base, "b.txt").unwrap().contains("+new"));
+
+        // Commit mid-task: the review empties of dirt but keeps the diff, and
+        // the branch gains a commit instead of waiting for merge to make one.
+        commit("host", &t, "checkpoint").unwrap();
+        let rev = review("host", &t).unwrap();
+        assert!(!rev.dirty, "still dirty after commit");
+        assert_eq!(rev.files.len(), 2, "commit lost the diff against base");
+        assert_eq!((rev.ahead, rev.behind), (2, 0));
+        assert!(commit("host", &t, "again").is_err(), "committed a clean tree");
+
+        // The base moves on under the task. Update pulls it in, and the merge
+        // home afterwards is the fast-forward it should be.
+        std::fs::write(repo.join("c.txt"), "base\n").unwrap();
+        git("host", &r, &["add", "-A"]).unwrap();
+        git("host", &r, &["commit", "-qm", "meanwhile"]).unwrap();
+        assert_eq!(review("host", &t).unwrap().behind, 1);
+        update("host", &t).unwrap();
+        let rev = review("host", &t).unwrap();
+        assert_eq!(rev.behind, 0, "update did not catch the base up");
+        assert!(std::path::Path::new(&t.path).join("c.txt").exists(), "base commit missing from worktree");
 
         merge("host", &t, "task work").unwrap();
         assert_eq!(std::fs::read_to_string(repo.join("b.txt")).unwrap(), "new\n");

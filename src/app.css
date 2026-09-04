@@ -645,5 +645,11 @@ table.plain td.mono { font-family: var(--mono); }
   flex: none; padding: 8px 14px; background: var(--err-bg); color: var(--err-fg);
   border-top: 1px solid var(--err-line); font-size: 12px;
 }
+/* The pull request URL, once there is one — selectable because the only thing
+   left to do with it is copy it when gh could not open a browser. */
+.sheet .hint.pr {
+  flex: none; padding: 8px 14px; border-top: 1px solid var(--line);
+  font-family: var(--mono); font-size: 12px; user-select: text; cursor: text;
+}
 .sheet header .plus { color: var(--done-fg); }
 .sheet header .minus { color: var(--err-fg); }
