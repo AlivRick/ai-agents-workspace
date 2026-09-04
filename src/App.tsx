@@ -436,15 +436,17 @@ export default function App() {
     setNewTaskWs(null);
     setView("code");
     // Cut the branch before the terminals open, so the agents start life inside
-    // it. A folder that is not a repo — or a repo git refuses to branch — keeps
-    // the old behaviour of working in the workspace itself rather than failing
-    // to make a task at all.
+    // it — but only when you asked for one. A repo git refuses to branch keeps
+    // the plain behaviour of working in the workspace itself rather than
+    // failing to make a task at all.
     let wt: Tree | undefined;
-    try {
-      wt = await api.worktreeCreate(w.path, spec.name, id, spec.runtime);
-      setTasks((all) => all.map((t) => (t.id === id ? { ...t, wt } : t)));
-    } catch {
-      wt = undefined;
+    if (spec.worktree) {
+      try {
+        wt = await api.worktreeCreate(w.path, spec.name, id, spec.runtime);
+        setTasks((all) => all.map((t) => (t.id === id ? { ...t, wt } : t)));
+      } catch {
+        wt = undefined;
+      }
     }
     const dir = wt?.path ?? w.path;
     // One command per distinct agent, not per terminal: four Claudes in a swarm
@@ -971,6 +973,7 @@ export default function App() {
 
       {newTaskWs && (
         <TaskSheet wsName={label(newTaskWs)} wsPath={newTaskWs.path} runtimes={runtimes} runtime={runtime}
+                   branch={git[newTaskWs.path]?.isRepo ? git[newTaskWs.path].branch || "HEAD" : ""}
                    probe={installedBins} onCancel={() => setNewTaskWs(null)}
                    onCreate={(spec) => createTask(newTaskWs, spec)} />
       )}

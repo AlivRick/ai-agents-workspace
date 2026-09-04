@@ -30,14 +30,21 @@ export function AgentIcon({ agent, size = 13 }: { agent: Slot; size?: number }) 
   );
 }
 
-export type TaskSpec = { name: string; slots: Slot[]; runtime: string; prompt: string; continueLast: boolean };
+export type TaskSpec = {
+  name: string; slots: Slot[]; runtime: string; prompt: string; continueLast: boolean;
+  /** Cut a git worktree for this task instead of working in the folder itself. */
+  worktree: boolean;
+};
 
 /** The sheet that opens when you add a task: pick a shape, pick how many
  *  terminals, optionally say what it should work on. */
 export default function TaskSheet({
-  wsName, wsPath, runtimes, runtime, probe, onCancel, onCreate,
+  wsName, wsPath, runtimes, runtime, branch, probe, onCancel, onCreate,
 }: {
   wsName: string; wsPath: string; runtimes: Runtime[]; runtime: string;
+  /** The workspace's current git branch, or "" when it is not a repo — the
+   *  worktree option only means something inside a checkout. */
+  branch: string;
   /** Which agent binaries a runtime actually has. Answered by the runtime's own
    *  shell, so switching "Where to run" asks again. */
   probe: (runtime: string) => Promise<string[]>;
@@ -49,6 +56,7 @@ export default function TaskSheet({
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
   const [continueLast, setContinueLast] = useState(false);
+  const [worktree, setWorktree] = useState(false);
   const [installed, setInstalled] = useState<string[] | null>(null);
 
   useEffect(() => {
@@ -82,7 +90,7 @@ export default function TaskSheet({
   const deaf = hasAgent && sel?.promptFlag === null;
   const submit = () => onCreate({
     name: name.trim() || prompt.trim().slice(0, 40) || "New task",
-    slots, runtime: rt, prompt: prompt.trim(), continueLast,
+    slots, runtime: rt, prompt: prompt.trim(), continueLast, worktree: worktree && !!branch,
   });
 
   return (
@@ -137,6 +145,16 @@ export default function TaskSheet({
                 ))}
               </div>
             </>
+          )}
+
+          {branch && (
+            <label className="opt">
+              <input type="checkbox" checked={worktree} onChange={(e) => setWorktree(e.target.checked)} />
+              <span><b>Work in a separate git worktree</b>
+                <i>Cuts a branch off <code>{branch}</code> and runs the terminals there, so the agents never
+                  touch your working copy. Review merges it back or throws it away. Off: they work in the
+                  folder itself.</i></span>
+            </label>
           )}
 
           {hasAgent && (
