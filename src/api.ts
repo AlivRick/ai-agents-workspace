@@ -69,6 +69,8 @@ export const api = {
   defaultRuntime: () => invoke<string>("default_runtime"),
   setRuntime: (runtime: string) => invoke<void>("set_runtime", { runtime }),
   claudeCommand: (extra?: string, runtime?: string) => invoke<string>("claude_command", { extra, runtime }),
+  agentsAvailable: (bins: string[], runtime?: string) =>
+    invoke<string[]>("agents_available", { bins, runtime }),
   listWorkspaces: () => invoke<Workspace[]>("list_workspaces"),
   addWorkspace: (path: string) => invoke<Workspace[]>("add_workspace", { path }),
   addWorkspaces: (paths: string[]) => invoke<Workspace[]>("add_workspaces", { paths }),

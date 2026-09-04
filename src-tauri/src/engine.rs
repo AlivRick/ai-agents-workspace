@@ -103,6 +103,83 @@ pub fn find_cli() -> Option<PathBuf> {
     seen.into_iter().find(is_executable)
 }
 
+// ------------------------------------------------------- the other agent CLIs
+
+/// The line the runtime's shell is asked to run.
+///
+/// Two things here are load-bearing, both learned the hard way:
+/// no double quote anywhere — `wsl.exe` is reached through a Windows command
+/// line and swallows them — and a trailing `true`, because the loop's exit
+/// status is that of the *last* `command -v`. Without it, an agent that is not
+/// installed makes the whole probe look like a failed command, and
+/// `wsl::run` throws the answer away: every agent then reads "not installed",
+/// including the one the user is looking at running in the next pane.
+fn probe_script(names: &[&str]) -> String {
+    format!("for c in {}; do command -v $c >/dev/null 2>&1 && echo AS:$c; done; true", names.join(" "))
+}
+
+/// The names out of a probe's output, in the order they were asked for.
+/// Split out from the probe so it can be tested without a shell: an rc file
+/// prints its own junk on the same stream, which is why the marker exists.
+fn found_in(text: &str, names: &[&str]) -> Vec<String> {
+    names
+        .iter()
+        .filter(|n| text.lines().any(|l| l.trim().strip_prefix("AS:") == Some(n)))
+        .map(|n| n.to_string())
+        .collect()
+}
+
+/// Is this name runnable from the GUI process's own PATH? Windows only — a
+/// Windows host has no interactive POSIX shell to ask.
+fn on_path(name: &str) -> bool {
+    let Some(paths) = std::env::var_os("PATH") else { return false };
+    std::env::split_paths(&paths).any(|d| {
+        ["", ".exe", ".cmd", ".bat"].iter().any(|e| is_executable(&d.join(format!("{name}{e}"))))
+    })
+}
+
+fn host_probe(script: &str) -> Option<Vec<u8>> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    let run = |cmd: &str, args: &[&str]| {
+        crate::util::quiet_command(cmd)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| !o.stdout.is_empty())
+            .map(|o| o.stdout)
+    };
+    // Same reasoning as wsl::run: every one of these CLIs installs itself from
+    // an *interactive* rc file (nvm, bun, the vendors' own installers), and a
+    // GUI process inherits a PATH that has none of it. `timeout` because an rc
+    // file can block forever; `sh -lc` as the fallback when there is no tty.
+    run("timeout", &["20", &shell, "-ic", script]).or_else(|| run("sh", &["-lc", script]))
+}
+
+/// Which of `bins` the *pane's* shell could actually run. Asking the shell the
+/// pane will get is the whole point: a Windows install says nothing about the
+/// distro, and the host's GUI PATH says nothing about either.
+pub fn which_bins(bins: &[String], runtime: &str) -> Vec<String> {
+    // Straight into a shell command, so nothing but a plain binary name goes in.
+    let names: Vec<&str> = bins
+        .iter()
+        .map(String::as_str)
+        .filter(|b| !b.is_empty() && b.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)))
+        .collect();
+    if names.is_empty() {
+        return Vec::new();
+    }
+    let script = probe_script(&names);
+    let out = match wsl::distro_of(runtime) {
+        Some(d) => wsl::run(d, &script),
+        None if cfg!(windows) => {
+            return names.iter().filter(|n| on_path(n)).map(|n| n.to_string()).collect()
+        }
+        None => host_probe(&script),
+    };
+    found_in(&String::from_utf8_lossy(&out.unwrap_or_default()), &names)
+}
+
 fn parse_semver(s: &str) -> Option<(u32, u32, u32)> {
     let head = s.trim().split_whitespace().next()?;
     let mut it = head.split('.');
@@ -357,6 +434,42 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
     use serde_json::json;
+
+    #[test]
+    fn probe_output_survives_a_noisy_rc_file() {
+        let names = ["claude", "gemini", "amp"];
+        // Đúng thứ zsh tương tác in ra: lỗi rc lẫn vào cùng luồng với câu trả lời.
+        let noisy = "/home/y/.zshrc:1: command not found: rbenv\nAS:claude\nAS:amp\n";
+        assert_eq!(found_in(noisy, &names), vec!["claude", "amp"]);
+        // Tên trần không có marker là rác, không phải câu trả lời.
+        assert_eq!(found_in("gemini\n", &names), Vec::<String>::new());
+        assert_eq!(found_in("", &names), Vec::<String>::new());
+    }
+
+    #[test]
+    fn probe_script_cannot_report_failure_just_because_an_agent_is_missing() {
+        let sc = probe_script(&["claude", "amp"]);
+        // Trạng thái thoát của vòng lặp là của `command -v` cuối cùng; thiếu
+        // `true` là cả câu trả lời bị wsl::run vứt đi.
+        assert!(sc.ends_with("; true"), "{sc}");
+        // Nháy kép bị nuốt trên đường tới wsl.exe.
+        assert!(!sc.contains('"'), "{sc}");
+    }
+
+    /// Cái duy nhất chứng minh probe thật sự chạy: hỏi shell của chính máy này
+    /// về hai lệnh POSIX luôn có và một cái chắc chắn không có.
+    #[test]
+    #[cfg(unix)]
+    fn probe_asks_a_real_shell() {
+        let bins = ["sh", "no-such-agent-cli", "env"].map(String::from).to_vec();
+        assert_eq!(which_bins(&bins, "host"), vec!["sh", "env"]);
+    }
+
+    #[test]
+    fn probe_refuses_anything_that_is_not_a_bare_binary_name() {
+        let evil = vec!["claude; rm -rf /".to_string(), String::new()];
+        assert!(which_bins(&evil, "host").is_empty());
+    }
 
     #[test]
     fn plan_label_prefers_the_field_that_is_actually_populated() {

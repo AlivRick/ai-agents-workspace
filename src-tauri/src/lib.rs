@@ -23,6 +23,14 @@ pub struct App {
     /// Probing the runtime list costs `1 + 2N` subprocesses. Doing it once per
     /// launch instead of once per caller is most of what made startup drag.
     runtimes: Mutex<Option<Vec<wsl::Runtime>>>,
+    /// Which agent CLIs each runtime can run.
+    ///
+    /// ponytail: cached for the life of the process, keyed by runtime alone —
+    /// the caller always asks about the whole agent table, so the answer does
+    /// not depend on which subset it passed. Installing a CLI while the app is
+    /// open needs a restart to show up; the upgrade path is a TTL or a refresh
+    /// button, neither worth a subprocess every time the sheet opens.
+    agents: Mutex<HashMap<String, Vec<String>>>,
 }
 
 impl App {
@@ -175,6 +183,24 @@ fn claude_command(app: State<App>, extra: Option<String>, runtime: Option<String
     let extra = extra.unwrap_or_default();
     let extra = if extra.trim().is_empty() { String::new() } else { format!(" {}", extra.trim()) };
     format!("{} --settings {}{}", shell_quote(&cli), shell_quote(&settings), extra)
+}
+
+/// Which agent CLIs are actually installed for this runtime, so the new-task
+/// sheet can say so instead of letting a pane print "command not found".
+#[tauri::command]
+async fn agents_available(
+    app: State<'_, App>,
+    bins: Vec<String>,
+    runtime: Option<String>,
+) -> Result<Vec<String>, String> {
+    let r = rt(runtime);
+    if let Some(found) = app.agents.lock().unwrap().get(&r) {
+        return Ok(found.clone());
+    }
+    let probe = r.clone();
+    let found = blocking(move || engine::which_bins(&bins, &probe)).await?;
+    app.agents.lock().unwrap().insert(r, found.clone());
+    Ok(found)
 }
 
 fn shell_quote(s: &str) -> String {
@@ -580,6 +606,7 @@ pub fn run() {
                 sessions: Arc::new(Mutex::new(Vec::new())),
                 wsl_homes: Mutex::new(HashMap::new()),
                 runtimes: Mutex::new(None),
+                agents: Mutex::new(HashMap::new()),
             });
             Ok(())
         })
@@ -594,6 +621,7 @@ pub fn run() {
             engine_status,
             list_runtimes,
             claude_command,
+            agents_available,
             list_workspaces,
             add_workspace,
             add_workspaces,

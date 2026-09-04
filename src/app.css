@@ -528,6 +528,10 @@ table.plain td.mono { font-family: var(--mono); }
 
 /* ------------------------------------------------------ bảng tạo tác vụ */
 .sheet-list.form { padding: 14px 16px 18px; display: flex; flex-direction: column; gap: 6px; }
+/* Cột flex thì con bị *nén* chứ không tràn, và `.seg` có overflow:hidden nên
+   min-height của nó là 0 — sheet vừa dài ra là hai dải chọn dẹp xuống còn một
+   vạch kẻ. Không con nào trong form được co lại; dài quá thì cuộn. */
+.sheet-list.form > * { flex: none; }
 .sheet header .path { color: var(--faint); font-family: var(--mono); font-size: 11px; }
 .form .lbl {
   font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--faint);
@@ -549,10 +553,13 @@ table.plain td.mono { font-family: var(--mono); }
 }
 .pick-card:hover { background: var(--hover); }
 .pick-card.on { border-color: var(--accent); background: var(--raise); }
-.pick-card b { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text); }
+/* Thẻ chỉ rộng ~150px: tên agent và huy hiệu không đứng chung một dòng được.
+   Cho phép xuống dòng, nhưng bản thân huy hiệu thì không bao giờ bị bẻ đôi —
+   "live status" vỡ thành hai dòng làm cả cái thẻ trông như bị lỗi. */
+.pick-card b { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 6px; font-size: 12.5px; color: var(--text); }
 .pick-card b em {
   font-style: normal; font-size: 10px; color: var(--faint); border: 1px solid var(--line);
-  border-radius: 20px; padding: 0 6px;
+  border-radius: 20px; padding: 0 6px; white-space: nowrap; flex: none;
 }
 .pick-card.on b em { color: var(--accent); border-color: var(--accent); }
 .pick-card i { display: block; font-style: normal; color: var(--faint); font-size: 11.5px; margin-top: 3px; }
@@ -568,7 +575,12 @@ table.plain td.mono { font-family: var(--mono); }
 .launch em {
   font-style: normal; font-size: 10px; color: var(--accent); border: 1px solid var(--line);
   border-radius: 20px; padding: 0 6px;
+  /* Dòng lệnh thật, nên có thể dài: cắt bớt chứ không đẩy hàng ra khỏi sheet. */
+  font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* Lời nhắc trong bảng tạo tác vụ dùng lại .hint của view rỗng, nhưng ở đây nó
+   là một dòng trong form chứ không phải cả một màn hình trống. */
+.sheet-list .hint { padding: 0; font-size: 11px; line-height: 1.5; }
 
 /* Dấu nhận diện agent: đứng trước tên tác vụ và tên terminal, tô đúng màu của
    CLI đó nên đọc được ở 13px mà không cần chữ. */

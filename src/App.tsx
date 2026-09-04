@@ -9,10 +9,11 @@ import ImportSheet from "./ImportSheet";
 import SettingsView from "./SettingsView";
 import UsageView from "./UsageView";
 import WorkspaceView, { TABS as WS_TABS, type Tab as WsTab } from "./WorkspaceView";
-import TaskSheet, { AGENTS, AgentIcon, agentName, type Slot, type TaskSpec } from "./TaskSheet";
+import TaskSheet, { AgentIcon, type TaskSpec } from "./TaskSheet";
+import { agentOf, allBins, launchArgs, launchCommand, type Slot } from "./agents";
 import { applyTheme, themeById } from "./themes";
 import { reorder } from "./reorder";
-import { loudest, quote, type Status } from "./task";
+import { loudest, type Status } from "./task";
 import {
   ago, api, blockTokens, fmtTokens, fmtUsd, shortPath, until,
   type Block, type EngineStatus, type GitInfo, type Runtime, type Workspace,
@@ -26,8 +27,8 @@ type Todo = { content: string; activeForm?: string; status: string };
 type Task = { id: string; wsId: string; name: string };
 type PaneInfo = {
   id: string; taskId: string; cwd: string; runtime: string; status: Status;
-  /** Which CLI this terminal was opened for — what ▶ re-runs, and why a Codex
-   *  terminal does not pretend to report Claude's hook status. */
+  /** Which CLI this terminal was opened for — why a Codex terminal does not
+   *  pretend to report Claude's hook status. */
   agent: Slot;
   /** When the pane last changed status — what the inbox sorts and ages by. */
   since: number;
@@ -402,24 +403,21 @@ export default function App() {
 
   const send = useCallback((id: string, text: string) => { void api.ptyWrite(id, text + "\r"); }, []);
 
+  /** Which agent CLIs a runtime can actually run. The backend probes the
+   *  runtime's own shell once and memoises, so asking per sheet open is one IPC
+   *  round trip rather than a subprocess. */
+  const installedBins = useCallback((runtime: string) => api.agentsAvailable(allBins(), runtime), []);
+
   /** The command that starts one agent. Claude goes through the backend so it
    *  gets the hook settings that make its status chip work; every other CLI is
-   *  just its own name, so an agent we have never heard of costs one table row. */
-  const agentCommand = useCallback(async (agent: Slot, runtime: string, prompt = "", extra = "") => {
-    if (agent === "terminal") return "";
+   *  its own binary, so a new agent costs one row in the table and nothing here. */
+  const agentCommand = useCallback(async (agent: Slot, runtime: string, prompt = "", cont = false) => {
+    const a = agentOf(agent);
+    if (!a || !a.bins.length) return "";
     if (agent === "claude")
-      return api.claudeCommand([extra, prompt && quote(prompt)].filter(Boolean).join(" ") || undefined, runtime);
-    const cmd = AGENTS.find((a) => a.id === agent)?.cmd ?? agent;
-    return prompt ? `${cmd} ${quote(prompt)}` : cmd;
-  }, []);
-
-  /** Re-launch the agent a terminal belongs to. */
-  const runAgent = useCallback(async (id: string) => {
-    const p = panes.find((x) => x.id === id);
-    if (!p) return;
-    const cmd = await agentCommand(p.agent === "terminal" ? "claude" : p.agent, p.runtime);
-    if (cmd) send(id, cmd);
-  }, [panes, send, agentCommand]);
+      return api.claudeCommand(launchArgs(a, prompt, cont) || undefined, runtime);
+    return launchCommand(agent, await installedBins(runtime), prompt, cont);
+  }, [installedBins]);
 
   // ------------------------------------------------------------------ tasks
   const createTask = useCallback(async (w: Workspace, spec: TaskSpec) => {
@@ -433,7 +431,7 @@ export default function App() {
     // should not be four round trips to the backend for the same string.
     const cmd = new Map<Slot, string>();
     for (const s of new Set(spec.slots))
-      cmd.set(s, await agentCommand(s, spec.runtime, spec.prompt, spec.continueLast ? "--continue" : ""));
+      cmd.set(s, await agentCommand(s, spec.runtime, spec.prompt, spec.continueLast));
     spec.slots.forEach((s) => addPane(w.path, id, cmd.get(s) || undefined, spec.runtime, s));
   }, [addPane, agentCommand]);
 
@@ -860,8 +858,6 @@ export default function App() {
                             {zoom === p.id ? "⤡" : "⤢"}
                           </button>
                           <button className="btn ghost" style={{ padding: "1px 6px" }}
-                                  onClick={() => runAgent(p.id)} title={`Run ${agentName(p.agent === "terminal" ? "claude" : p.agent)} here`}>▶</button>
-                          <button className="btn ghost" style={{ padding: "1px 6px" }}
                                   onClick={() => closePane(p.id)} title="Close terminal">×</button>
                         </header>
                         {showTodos === p.id && (
@@ -930,7 +926,7 @@ export default function App() {
 
       {newTaskWs && (
         <TaskSheet wsName={label(newTaskWs)} wsPath={newTaskWs.path} runtimes={runtimes} runtime={runtime}
-                   onCancel={() => setNewTaskWs(null)}
+                   probe={installedBins} onCancel={() => setNewTaskWs(null)}
                    onCreate={(spec) => createTask(newTaskWs, spec)} />
       )}
 
