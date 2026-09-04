@@ -117,6 +117,13 @@ pub fn run(distro: &str, cmd: &str) -> Option<Vec<u8>> {
         .or_else(|| wsl(&["-d", distro, "--", "sh", "-lc", cmd]))
 }
 
+/// `wsl.exe` with no shell in the way. `run` asks an interactive shell because
+/// it needs the user's PATH; anything whose *output* gets parsed must not, or
+/// rc-file chatter lands in the middle of it.
+pub fn exec(args: &[&str]) -> std::io::Result<std::process::Output> {
+    crate::util::quiet_command("wsl.exe").args(args).output()
+}
+
 /// `claude --version` as the distro sees it — a Windows install of the CLI says
 /// nothing about whether the Linux side has one.
 pub fn claude_version(distro: &str) -> Option<String> {

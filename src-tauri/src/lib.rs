@@ -5,6 +5,7 @@ mod sessions;
 mod store;
 mod term;
 mod util;
+mod worktree;
 mod ws;
 mod wsl;
 
@@ -262,6 +263,52 @@ fn update_workspace(
 #[tauri::command]
 async fn git_info(paths: Vec<String>) -> Result<Vec<store::GitInfo>, String> {
     blocking(move || store::git_info(paths)).await
+}
+
+// ------------------------------------------------------------------ worktrees
+
+/// Cut a worktree for a task. An error here is not fatal to the caller: a
+/// folder that is not a git checkout has always run tasks in place, and still
+/// does — the frontend falls back to the workspace path.
+#[tauri::command]
+async fn worktree_create(
+    runtime: Option<String>, repo: String, name: String, id: String,
+) -> Result<worktree::Tree, String> {
+    let r = rt(runtime);
+    blocking(move || worktree::create(&r, &repo, &name, &id, "as/")).await?
+}
+
+/// What the task changed, committed or not.
+#[tauri::command]
+async fn worktree_changes(
+    runtime: Option<String>, tree: worktree::Tree,
+) -> Result<Vec<worktree::Change>, String> {
+    let r = rt(runtime);
+    blocking(move || worktree::changes(&r, &tree.path, &tree.base)).await?
+}
+
+#[tauri::command]
+async fn worktree_diff(
+    runtime: Option<String>, tree: worktree::Tree, file: String,
+) -> Result<String, String> {
+    let r = rt(runtime);
+    blocking(move || worktree::file_diff(&r, &tree.path, &tree.base, &file)).await?
+}
+
+#[tauri::command]
+async fn worktree_merge(
+    runtime: Option<String>, tree: worktree::Tree, message: String,
+) -> Result<String, String> {
+    let r = rt(runtime);
+    blocking(move || worktree::merge(&r, &tree, &message)).await?
+}
+
+#[tauri::command]
+async fn worktree_remove(
+    runtime: Option<String>, tree: worktree::Tree, delete_branch: bool,
+) -> Result<(), String> {
+    let r = rt(runtime);
+    blocking(move || worktree::remove(&r, &tree, delete_branch)).await?
 }
 
 /// Folders Claude Code knows about that the user has not added yet — read from
@@ -628,6 +675,11 @@ pub fn run() {
             remove_workspace,
             update_workspace,
             git_info,
+            worktree_create,
+            worktree_changes,
+            worktree_diff,
+            worktree_merge,
+            worktree_remove,
             claude_projects,
             default_runtime,
             set_runtime,

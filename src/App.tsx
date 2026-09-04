@@ -10,21 +10,27 @@ import SettingsView from "./SettingsView";
 import UsageView from "./UsageView";
 import WorkspaceView, { TABS as WS_TABS, type Tab as WsTab } from "./WorkspaceView";
 import TaskSheet, { AgentIcon, type TaskSpec } from "./TaskSheet";
+import DiffSheet from "./DiffSheet";
 import { agentOf, allBins, launchArgs, launchCommand, type Slot } from "./agents";
 import { applyTheme, themeById } from "./themes";
 import { reorder } from "./reorder";
 import { loudest, type Status } from "./task";
 import {
   ago, api, blockTokens, fmtTokens, fmtUsd, shortPath, until,
-  type Block, type EngineStatus, type GitInfo, type Runtime, type Workspace,
+  type Block, type EngineStatus, type GitInfo, type Runtime, type Tree, type Workspace,
 } from "./api";
 
 type View = "code" | "workspace" | "usage" | "settings";
 /** One entry of the todo list Claude keeps for itself, as TodoWrite writes it. */
 type Todo = { content: string; activeForm?: string; status: string };
-/** A unit of work inside a workspace: a name and the terminals doing it.
- *  Panes point at it, so the task owns nothing but its identity. */
-type Task = { id: string; wsId: string; name: string };
+/** A unit of work inside a workspace: a name, the terminals doing it, and the
+ *  git worktree they do it in.
+ *
+ *  The worktree is per *task*, not per pane: two agents on one job have to see
+ *  each other's files, and a task with a single pane is already full per-agent
+ *  isolation. Absent on folders that are not git checkouts — those run in the
+ *  workspace itself, exactly as every task did before. */
+type Task = { id: string; wsId: string; name: string; wt?: Tree };
 type PaneInfo = {
   id: string; taskId: string; cwd: string; runtime: string; status: Status;
   /** Which CLI this terminal was opened for — why a Codex terminal does not
@@ -74,6 +80,8 @@ export default function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [newTaskWs, setNewTaskWs] = useState<Workspace | null>(null);
+  /** The task whose changes are open for review. */
+  const [reviewId, setReviewId] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
   const [panes, setPanes] = useState<PaneInfo[]>([]);
   const dragPane = useRef<string | null>(null);
@@ -427,17 +435,43 @@ export default function App() {
     setTaskId(id);
     setNewTaskWs(null);
     setView("code");
+    // Cut the branch before the terminals open, so the agents start life inside
+    // it. A folder that is not a repo — or a repo git refuses to branch — keeps
+    // the old behaviour of working in the workspace itself rather than failing
+    // to make a task at all.
+    let wt: Tree | undefined;
+    try {
+      wt = await api.worktreeCreate(w.path, spec.name, id, spec.runtime);
+      setTasks((all) => all.map((t) => (t.id === id ? { ...t, wt } : t)));
+    } catch {
+      wt = undefined;
+    }
+    const dir = wt?.path ?? w.path;
     // One command per distinct agent, not per terminal: four Claudes in a swarm
     // should not be four round trips to the backend for the same string.
     const cmd = new Map<Slot, string>();
     for (const s of new Set(spec.slots))
       cmd.set(s, await agentCommand(s, spec.runtime, spec.prompt, spec.continueLast));
-    spec.slots.forEach((s) => addPane(w.path, id, cmd.get(s) || undefined, spec.runtime, s));
+    spec.slots.forEach((s) => addPane(dir, id, cmd.get(s) || undefined, spec.runtime, s));
   }, [addPane, agentCommand]);
 
   const closeTask = useCallback((id: string) => {
+    // A worktree outlives the task that made it on purpose: the terminals are
+    // disposable, the branch is the work. Closing here only stops asking about
+    // it — Review is where a branch actually gets merged or deleted.
+    const wt = now.current.tasks.find((t) => t.id === id)?.wt;
+    if (wt && !confirm(`Close this task? Its branch ${wt.branch} and worktree stay on disk — reopen a task there or clean them up with git.`))
+      return;
     // Panes unmount with the task, and Pane's cleanup kills their PTYs — that
     // is the point: closing a task closes the terminals doing it.
+    setPanes((all) => all.filter((p) => p.taskId !== id));
+    setTasks((all) => all.filter((t) => t.id !== id));
+  }, []);
+
+  /** The branch landed or went in the bin; either way the checkout is gone, so
+   *  the terminals still sitting in it have to go with it. */
+  const endWorktree = useCallback((id: string) => {
+    setReviewId(null);
     setPanes((all) => all.filter((p) => p.taskId !== id));
     setTasks((all) => all.filter((t) => t.id !== id));
   }, []);
@@ -715,7 +749,7 @@ export default function App() {
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       const w = workspaces.find((x) => x.id === t.wsId);
-                                      if (w) { setTaskId(t.id); addPane(w.path, t.id); }
+                                      if (w) { setTaskId(t.id); addPane(t.wt?.path ?? w.path, t.id); }
                                     }}>+</button>
                             <button className="x" title="Close the task and all its terminals"
                                     onClick={(e) => { e.stopPropagation(); closeTask(t.id); }}>×</button>
@@ -742,6 +776,17 @@ export default function App() {
               <div className="toolbar">
                 <span className="title">{task ? task.name : ws ? label(ws) : "No workspace selected"}</span>
                 <span className="path">{ws ? shortPath(ws.path) : ""}</span>
+                {task?.wt && (
+                  <>
+                    <span className="branch" title={`Working in ${task.wt.path}, on a branch cut from ${task.wt.base}`}>
+                      {task.wt.branch}
+                    </span>
+                    <button className="btn ghost" onClick={() => setReviewId(task.id)}
+                            title="See what this task changed, then merge it or throw it away">
+                      Review
+                    </button>
+                  </>
+                )}
                 <span className="sp" />
                 {runtimes.length > 1 && (
                   <div className="seg" title="Where new terminals will run">
@@ -769,7 +814,7 @@ export default function App() {
                     ) : (
                       <>
                         <p>Task “{task.name}” has no terminals left.</p>
-                        <button className="btn primary" onClick={() => addPane(cwd, task.id)}>+ Terminal</button>
+                        <button className="btn primary" onClick={() => addPane(task.wt?.path ?? cwd, task.id)}>+ Terminal</button>
                       </>
                     )}
                   </div>
@@ -929,6 +974,17 @@ export default function App() {
                    probe={installedBins} onCancel={() => setNewTaskWs(null)}
                    onCreate={(spec) => createTask(newTaskWs, spec)} />
       )}
+
+      {(() => {
+        const t = tasks.find((x) => x.id === reviewId);
+        // The runtime a task's panes run in — git has to be asked from there,
+        // not from the host, or a WSL worktree gets read by Windows git.
+        const rt = panes.find((p) => p.taskId === reviewId)?.runtime ?? runtime;
+        return t?.wt ? (
+          <DiffSheet tree={t.wt} name={t.name} runtime={rt} onClose={() => setReviewId(null)}
+                     onMerged={() => endWorktree(t.id)} onDiscarded={() => endWorktree(t.id)} />
+        ) : null;
+      })()}
 
       {inbox && (
         <>

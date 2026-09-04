@@ -13,6 +13,10 @@ export type EngineStatus = {
 };
 export type Workspace = { id: string; path: string; name: string; addedAtMs: number; favorite: boolean };
 export type GitInfo = { path: string; isRepo: boolean; branch: string; dirty: number };
+/** The worktree one task works in, and the branch its result goes back to. */
+export type Tree = { repo: string; path: string; branch: string; base: string };
+/** One file a task touched, committed or not. */
+export type Change = { path: string; status: string; added: number; removed: number; binary: boolean };
 export type ModelUsage = { model: string; input: number; output: number; cacheRead: number; cacheCreate: number; costUsd: number };
 export type Session = {
   id: string; file: string; cwd: string; title: string; lastPrompt: string;
@@ -112,6 +116,15 @@ export const api = {
   ptyWrite: (id: string, data: string) => invoke<void>("pty_write", { id, data }),
   ptyResize: (id: string, cols: number, rows: number) => invoke<void>("pty_resize", { id, cols, rows }),
   ptyClose: (id: string) => invoke<void>("pty_close", { id }),
+  worktreeCreate: (repo: string, name: string, id: string, runtime?: string) =>
+    invoke<Tree>("worktree_create", { repo, name, id, runtime }),
+  worktreeChanges: (tree: Tree, runtime?: string) => invoke<Change[]>("worktree_changes", { tree, runtime }),
+  worktreeDiff: (tree: Tree, file: string, runtime?: string) =>
+    invoke<string>("worktree_diff", { tree, file, runtime }),
+  worktreeMerge: (tree: Tree, message: string, runtime?: string) =>
+    invoke<string>("worktree_merge", { tree, message, runtime }),
+  worktreeRemove: (tree: Tree, deleteBranch: boolean, runtime?: string) =>
+    invoke<void>("worktree_remove", { tree, deleteBranch, runtime }),
   hookEvents: () => invoke<HookEvent[]>("hook_events"),
   /** False when the platform cannot show a clickable toast — fall back to the plugin. */
   toast: (title: string, body: string, pane: string) => invoke<boolean>("toast", { title, body, pane }),

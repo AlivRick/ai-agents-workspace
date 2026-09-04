@@ -598,3 +598,52 @@ table.plain td.mono { font-family: var(--mono); }
 
 /* Nút chọn agent trong tab Mức dùng: icon đứng trước tên. */
 .seg button { display: inline-flex; align-items: center; gap: 5px; }
+
+/* --------------------------------------------------------------- review */
+/* The branch a task works on, next to its name in the toolbar. */
+.toolbar .branch {
+  font-family: var(--mono); font-size: 11px; color: var(--dim);
+  background: var(--raise); border: 1px solid var(--line-soft);
+  border-radius: 5px; padding: 1px 6px; white-space: nowrap;
+}
+/* A diff needs width far more than a form does, and height for the same
+   reason — the sheet default would show six lines of code at a time. */
+.sheet.wide { width: min(1100px, 100%); height: min(760px, 100%); }
+.review { flex: 1; display: grid; grid-template-columns: minmax(200px, 280px) minmax(0, 1fr); min-height: 0; }
+.review .files { overflow-y: auto; border-right: 1px solid var(--line); padding: 6px; }
+.review .frow {
+  display: flex; align-items: center; gap: 7px; width: 100%; text-align: left;
+  padding: 5px 7px; border: 0; border-radius: 6px; background: none; color: var(--text);
+  font: inherit; font-size: 12px; cursor: pointer;
+}
+.review .frow:hover { background: var(--hover); }
+.review .frow.on { background: var(--raise); }
+.review .frow .st {
+  flex: none; width: 15px; text-align: center; font-family: var(--mono); font-size: 10px;
+  font-weight: 700; border-radius: 3px; color: var(--faint);
+}
+.review .frow .sA { color: var(--done-fg); background: var(--done-bg); }
+.review .frow .sD { color: var(--err-fg); background: var(--err-bg); }
+/* The tail of a path is what tells two files apart, so ellipsise the head. */
+.review .frow .n { flex: 1; overflow: hidden; white-space: nowrap; direction: rtl; text-align: left; }
+.review .frow .num { flex: none; color: var(--faint); font-family: var(--mono); font-size: 10px; }
+.review .diff { overflow: auto; font-family: var(--mono); font-size: 12px; line-height: 1.55; padding: 4px 0 10px; }
+.review .dl { display: flex; white-space: pre; }
+.review .dl .ln {
+  flex: none; width: 44px; padding-right: 8px; text-align: right; color: var(--faint);
+  user-select: none; font-size: 11px;
+}
+.review .dl .tx { flex: 1; padding-right: 12px; }
+.review .dl.add { background: var(--done-bg); }
+.review .dl.add .tx { color: var(--done-fg); }
+.review .dl.del { background: var(--err-bg); }
+.review .dl.del .tx { color: var(--err-fg); }
+.review .dl.hunk { color: var(--faint); background: var(--raise); }
+.review .dl.meta { color: var(--faint); }
+.review .hint { padding: 10px 12px; }
+.sheet .err {
+  flex: none; padding: 8px 14px; background: var(--err-bg); color: var(--err-fg);
+  border-top: 1px solid var(--err-line); font-size: 12px;
+}
+.sheet header .plus { color: var(--done-fg); }
+.sheet header .minus { color: var(--err-fg); }

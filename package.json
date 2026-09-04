@@ -11,7 +11,9 @@
     "check:reorder": "node --experimental-strip-types src/reorder.check.ts",
     "check:limits": "node --experimental-strip-types src/limits.check.ts",
     "check:task": "node --experimental-strip-types src/task.check.ts",
-    "check:agents": "node --experimental-strip-types src/agents.check.ts"
+    "check:agents": "node --experimental-strip-types src/agents.check.ts",
+    "check:diff": "node --experimental-strip-types src/diff.check.ts",
+    "release:win": "npm run tauri build -- --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis && bash scripts/ship-win.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
