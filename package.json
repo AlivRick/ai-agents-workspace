@@ -14,7 +14,8 @@
     "check:agents": "node --experimental-strip-types src/agents.check.ts",
     "check:diff": "node --experimental-strip-types src/diff.check.ts",
     "release:win": "npm run tauri build -- --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis && bash scripts/ship-win.sh",
-    "check:zoom": "node --experimental-strip-types src/zoom.check.ts"
+    "check:zoom": "node --experimental-strip-types src/zoom.check.ts",
+    "check:writeq": "node --experimental-strip-types src/writeq.check.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

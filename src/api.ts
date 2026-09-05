@@ -1,4 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
+import { makeWriteQueue } from "./writeq.ts";
+
+const writes = makeWriteQueue((id, data) => invoke<void>("pty_write", { id, data }));
 
 export type Account = {
   email: string; displayName: string; fullName: string; organization: string;
@@ -117,9 +120,12 @@ export const api = {
     invoke<UsageReport>("codex_report", { range, tzOffsetMin: new Date().getTimezoneOffset(), runtime }),
   ptyOpen: (id: string, cwd: string, cols: number, rows: number, runtime = "host", shellIntegration = true) =>
     invoke<void>("pty_open", { id, cwd, cols, rows, shellIntegration, runtime }),
-  ptyWrite: (id: string, data: string) => invoke<void>("pty_write", { id, data }),
+  // ponytail: một lần ghi bay trên đường cho mỗi pane. Trần của nó là nếu phía
+  // Rust ghi chậm thì độ trễ gõ phím bám theo; nâng cấp là dời hàng đợi xuống
+  // Rust, mỗi pane một channel.
+  ptyWrite: (id: string, data: string) => writes.write(id, data),
   ptyResize: (id: string, cols: number, rows: number) => invoke<void>("pty_resize", { id, cols, rows }),
-  ptyClose: (id: string) => invoke<void>("pty_close", { id }),
+  ptyClose: (id: string) => { writes.forget(id); return invoke<void>("pty_close", { id }); },
   worktreeCreate: (repo: string, name: string, id: string, runtime?: string) =>
     invoke<Tree>("worktree_create", { repo, name, id, runtime }),
   worktreeReview: (tree: Tree, runtime?: string) => invoke<Review>("worktree_review", { tree, runtime }),

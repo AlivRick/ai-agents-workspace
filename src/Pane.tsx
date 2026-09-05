@@ -160,6 +160,13 @@ export default function Pane({
         const el = host.current;
         if (!el?.offsetWidth || !el.offsetHeight) return;
         try { fit.fit(); } catch { return; }
+        // Pane ẩn bằng display:none thì xterm ghi lại chiều cao viewport = 0 và
+        // co vùng cuộn về 0. Hiện lại mà số cột/dòng không đổi thì FitAddon
+        // không gọi resize, nên không gì bắt xterm đo lại: con lăn chuột chết
+        // cho tới khi có output mới. Ép nó đồng bộ lại ngay khi pane có kích thước.
+        // ponytail: phải chạm _core vì xterm 5.5 chưa mở API này ra ngoài;
+        // bỏ được khi upstream expose syncScrollArea.
+        (term as unknown as { _core?: { viewport?: { syncScrollArea(immediate?: boolean): void } } })._core?.viewport?.syncScrollArea(true);
         void api.ptyResize(id, term.cols, term.rows).catch(() => {});
       });
     });
