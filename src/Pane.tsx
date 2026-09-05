@@ -59,6 +59,19 @@ export default function Pane({
       // Phóng to chữ là việc của app, không phải của shell: nuốt phím ở đây
       // rồi để listener trên window xử lý.
       if (e.type === "keydown" && (e.ctrlKey || e.metaKey) && !e.altKey && "+=-_0".includes(e.key)) return false;
+      // Ctrl+Enter xuống dòng: xterm gửi Ctrl+Enter y hệt Enter, nên tự gửi
+      // ESC+CR — đúng chuỗi Alt+Enter — để CLI hiểu là newline chứ không submit.
+      if (e.type === "keydown" && e.ctrlKey && !e.altKey && !e.shiftKey && e.key === "Enter") {
+        void api.ptyWrite(id, "\x1b\r").catch(() => setDead(true));
+        return false;
+      }
+      // Đang bôi đen thì Ctrl+C là copy, không phải SIGINT — giống Windows
+      // Terminal. Bỏ selection luôn để lần bấm sau ngắt lệnh như bình thường.
+      if (e.type === "keydown" && e.ctrlKey && !e.altKey && !e.shiftKey && e.key === "c" && term.hasSelection()) {
+        void navigator.clipboard.writeText(term.getSelection()).catch(() => {});
+        term.clearSelection();
+        return false;
+      }
       if (e.type === "keydown" && e.ctrlKey && !e.altKey && e.key.toLowerCase() === "f") {
         setFind((f) => f ?? "");
         queueMicrotask(() => findBox.current?.focus());
