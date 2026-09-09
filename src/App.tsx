@@ -62,6 +62,14 @@ const STATUS: Record<Status, [string, string]> = {
   idle: ["", "ready"], run: ["run", "working"], att: ["att", "waiting for you"], done: ["done", "done"],
 };
 const PIN = "M9 3h6l-1 6 4 3v2h-5v7l-1 1-1-1v-7H6v-2l4-3z";
+/** Bộ icon cho workspace. ponytail: một danh sách emoji cố định, không phải
+ *  emoji picker đầy đủ — trần của nó là bạn chỉ chọn được trong 30 cái này;
+ *  nâng cấp là cho gõ emoji tự do vào một ô input. */
+const WS_ICONS = [
+  "📁", "⭐", "🔥", "🚀", "🧪", "🐛", "🔧", "📦", "🧠", "💡",
+  "🎯", "🎨", "🌱", "🌊", "🍀", "🐙", "🐧", "🦀", "⚡", "🛡️",
+  "📊", "💰", "📝", "🔒", "🌐", "🤖", "🎵", "☕", "🏗️", "🧩",
+];
 /** Nút thu gọn. Cùng một icon ở cả hai trạng thái, đứng yên một chỗ — chevron
  *  đổi chiều mà logo lại nhảy theo là thứ làm thanh bên trông lệch lúc thu. */
 const BURGER = "M4 7h16M4 12h16M4 17h16";
@@ -90,6 +98,8 @@ export default function App() {
   const [newTaskWs, setNewTaskWs] = useState<Workspace | null>(null);
   /** The task whose changes are open for review. */
   const [reviewId, setReviewId] = useState<string | null>(null);
+  /** Workspace đang mở bảng chọn icon (null = đóng). */
+  const [iconFor, setIconFor] = useState<string | null>(null);
   /** Something the app could not finish and you have to know about. */
   const [notice, setNotice] = useState<string>("");
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
@@ -612,6 +622,11 @@ export default function App() {
 
   const togglePin = (w: Workspace) => api.updateWorkspace(w.id, { favorite: !w.favorite }).then(setWorkspaces);
 
+  const setIcon = (id: string, icon: string) => {
+    setIconFor(null);
+    api.updateWorkspace(id, { icon }).then(setWorkspaces);
+  };
+
   const removeWorkspace = (w: Workspace) => {
     tasks.filter((t) => t.wsId === w.id).forEach((t) => closeTask(t.id));
     api.removeWorkspace(w.id).then(setWorkspaces);
@@ -796,7 +811,7 @@ export default function App() {
               {visibleWs.map((w) => (
                 <button key={w.id} className={"mini-ws" + (w.id === wsId ? " on" : "")}
                         onClick={() => setWsId(w.id)} title={`${label(w)} — ${shortPath(w.path)}`}>
-                  {label(w).split(/[/\\]/).pop()!.slice(0, 2).toUpperCase()}
+                  {w.icon || label(w).split(/[/\\]/).pop()!.slice(0, 2).toUpperCase()}
                 </button>
               ))}
             </div>
@@ -827,6 +842,7 @@ export default function App() {
                       <svg width="12" height="12" viewBox="0 0 24 24" fill={w.favorite ? "currentColor" : "none"}
                            stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"><path d={PIN} /></svg>
                     </button>
+                    {w.icon && <span className="ic">{w.icon}</span>}
                     <span className="n">{label(w)}</span>
                     {/* Two elements, not one string: glued together, the dirty
                         count is the tail of the text that gets ellipsised away,
@@ -905,7 +921,28 @@ export default function App() {
           <div className="view" style={{ display: view === "code" ? "flex" : "none" }}>
             <>
               <div className="toolbar">
+                {ws && (
+                  <button className="ws-icon" onClick={() => setIconFor(iconFor ? null : ws.id)}
+                          title={ws.icon ? `Đổi icon của ${label(ws)}` : `Chọn icon cho ${label(ws)}`}>
+                    {ws.icon || "＋"}
+                  </button>
+                )}
                 <span className="title">{task ? task.name : ws ? label(ws) : "No workspace selected"}</span>
+                {ws && iconFor === ws.id && (
+                  <>
+                    {/* Bấm ra ngoài là đóng — nền trong suốt phủ cả cửa sổ, rẻ
+                        hơn nghe sự kiện click trên document. */}
+                    <div className="icon-back" onClick={() => setIconFor(null)} />
+                    <div className="icon-pop">
+                      {WS_ICONS.map((e) => (
+                        <button key={e} className={ws.icon === e ? "on" : ""}
+                                onClick={() => setIcon(ws.id, e)}>{e}</button>
+                      ))}
+                      <button className="clear" onClick={() => setIcon(ws.id, "")}
+                              title="Bỏ icon">Bỏ icon</button>
+                    </div>
+                  </>
+                )}
                 <span className="path">{wsId === SCRATCH ? "~" : ws ? shortPath(ws.path) : ""}</span>
                 {task?.wt && (
                   <>

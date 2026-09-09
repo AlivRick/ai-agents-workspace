@@ -18,6 +18,9 @@ pub struct Workspace {
     pub added_at_ms: u64,
     #[serde(default)]
     pub favorite: bool,
+    /// Emoji người dùng gắn cho workspace. Rỗng = chưa chọn.
+    #[serde(default)]
+    pub icon: String,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -71,6 +74,7 @@ impl Store {
             path,
             added_at_ms: now_ms(),
             favorite: false,
+            icon: String::new(),
         });
     }
 
@@ -78,7 +82,7 @@ impl Store {
         self.workspaces.retain(|w| w.id != id);
     }
 
-    pub fn update(&mut self, id: &str, name: Option<String>, favorite: Option<bool>) {
+    pub fn update(&mut self, id: &str, name: Option<String>, favorite: Option<bool>, icon: Option<String>) {
         if let Some(w) = self.workspaces.iter_mut().find(|w| w.id == id) {
             if let Some(n) = name {
                 if !n.trim().is_empty() {
@@ -87,6 +91,10 @@ impl Store {
             }
             if let Some(f) = favorite {
                 w.favorite = f;
+            }
+            // Chuỗi rỗng là cách gỡ icon, nên không lọc trim rỗng như tên.
+            if let Some(i) = icon {
+                w.icon = i.trim().to_string();
             }
         }
     }
