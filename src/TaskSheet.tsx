@@ -34,14 +34,22 @@ export type TaskSpec = {
   name: string; slots: Slot[]; runtime: string; prompt: string; continueLast: boolean;
   /** Cut a git worktree for this task instead of working in the folder itself. */
   worktree: boolean;
+  /** Put that worktree at `<repo>/.agentspace/…` instead of beside the repo —
+   *  the only place a dev container or compose mount can see it. */
+  inside: boolean;
+  /** One command run in a terminal of its own inside the fresh worktree —
+   *  whatever brings the app up there. Empty means nothing to run. */
+  setup: string;
 };
 
 /** The sheet that opens when you add a task: pick a shape, pick how many
  *  terminals, optionally say what it should work on. */
 export default function TaskSheet({
-  wsName, wsPath, runtimes, runtime, branch, probe, onCancel, onCreate,
+  wsName, wsPath, runtimes, runtime, branch, setup: setup0, probe, onCancel, onCreate,
 }: {
   wsName: string; wsPath: string; runtimes: Runtime[]; runtime: string;
+  /** Lệnh dựng môi trường đã nhớ của workspace này. */
+  setup: string;
   /** The workspace's current git branch, or "" when it is not a repo — the
    *  worktree option only means something inside a checkout. */
   branch: string;
@@ -57,6 +65,8 @@ export default function TaskSheet({
   const [prompt, setPrompt] = useState("");
   const [continueLast, setContinueLast] = useState(false);
   const [worktree, setWorktree] = useState(false);
+  const [inside, setInside] = useState(false);
+  const [setup, setSetup] = useState(setup0);
   const [installed, setInstalled] = useState<string[] | null>(null);
   /** Why the probe came back empty, when the backend said. */
   const [probeErr, setProbeErr] = useState("");
@@ -96,6 +106,8 @@ export default function TaskSheet({
   const submit = () => onCreate({
     name: name.trim() || prompt.trim().slice(0, 40) || "New task",
     slots, runtime: rt, prompt: prompt.trim(), continueLast, worktree: worktree && !!branch,
+    inside: worktree && !!branch && inside,
+    setup: worktree && branch ? setup.trim() : "",
   });
 
   return (
@@ -160,6 +172,30 @@ export default function TaskSheet({
                   touch your working copy. Review merges it back or throws it away. Off: they work in the
                   folder itself.</i></span>
             </label>
+          )}
+
+          {branch && worktree && (
+            <>
+              <label className="opt">
+                <input type="checkbox" checked={inside} onChange={(e) => setInside(e.target.checked)} />
+                <span><b>Đặt worktree trong repo (<code>.agentspace/</code>)</b>
+                  <i>Bật khi code chạy trong dev container hay docker compose: chúng chỉ mount đúng thư mục
+                    repo, nên worktree nằm cạnh repo là thứ container không nhìn thấy. Tự thêm vào
+                    <code>.git/info/exclude</code> nên <code>git status</code> vẫn sạch và không commit
+                    nhầm được. Tắt: cắt ra cạnh repo như cũ.</i></span>
+              </label>
+
+              <label className="fld">
+                <span className="lbl">Chạy gì trong worktree mới — không bắt buộc</span>
+                <textarea className="txt area" value={setup} rows={2}
+                          placeholder="docker compose -p {task} up -d && npm run dev -- -p 400{n}"
+                          onChange={(e) => setSetup(e.target.value)} />
+                <span className="hint">Mở thêm một terminal trong worktree và chạy ngay dòng này — dev
+                  server, docker, redis. Nhớ lại cho lần sau của workspace này. <code>{"{n}"}</code> là số
+                  riêng của tác vụ (1, 2, 3…) để tránh đụng cổng, <code>{"{task}"}</code> tên nhánh/thư mục,
+                  <code>{"{tree}"}</code> đường dẫn worktree.</span>
+              </label>
+            </>
           )}
 
           {hasAgent && (

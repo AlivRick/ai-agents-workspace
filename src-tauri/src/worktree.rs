@@ -152,14 +152,52 @@ pub fn slug(name: &str) -> String {
     if s.is_empty() { "task".into() } else { s }
 }
 
-/// Sibling of the repo, never inside it: a worktree under the repo would show
-/// up in the repo's own `git status`, in every file watcher and in every
-/// `npm run build` glob. Same parent keeps it on the same filesystem, which is
-/// what makes `git worktree` and the `node_modules` link work at all.
-pub fn dir_for(repo: &str, folder: &str) -> String {
+/// Sibling of the repo by default, never inside it: a worktree under the repo
+/// would show up in the repo's own `git status`, in every file watcher and in
+/// every `npm run build` glob. Same parent keeps it on the same filesystem,
+/// which is what makes `git worktree` and the `node_modules` link work at all.
+///
+/// `inside` puts it at `<repo>/.agentspace/<folder>` instead, and exists for
+/// one reason: a dev container or compose stack mounts *the repo folder*, so a
+/// sibling worktree is invisible to the thing that runs the code. Nothing can
+/// build or serve a checkout the container cannot see. The dot prefix keeps it
+/// out of shell globs and the `.git/info/exclude` line keeps it out of
+/// `git status`; the tooling worry above is real but is the lesser evil when
+/// the alternative is "cannot run the code at all".
+pub fn dir_for(repo: &str, folder: &str, inside: bool) -> String {
     let s = sep(repo);
     let base = repo.trim_end_matches(['/', '\\']);
-    format!("{base}.agentspace{s}{folder}")
+    if inside { format!("{base}{s}.agentspace{s}{folder}") } else { format!("{base}.agentspace{s}{folder}") }
+}
+
+/// Keep the in-repo worktree folder out of `git status` — and out of any
+/// `git add -A` an agent runs, which is the way a 37k-file checkout actually
+/// gets committed by accident.
+///
+/// `.git/info/exclude`, not `.gitignore`: this is one machine's tool leaving
+/// its droppings, not a fact about the project, and the app has no business
+/// writing a tracked file. Committing the same line is the user's call.
+///
+/// ponytail: reads `<repo>/.git/info/exclude` directly rather than asking git
+/// for `--git-common-dir`, so a workspace that is *itself* a worktree (a `.git`
+/// file, not a directory) is skipped instead of handled. The upgrade path is
+/// resolving that pointer; the cost of not doing it is one untracked folder in
+/// a setup nobody has yet.
+fn exclude_worktrees(repo: &str) {
+    let s = sep(repo);
+    let base = repo.trim_end_matches(['/', '\\']);
+    let dir = format!("{base}{s}.git{s}info");
+    if !std::path::Path::new(&format!("{base}{s}.git")).is_dir() {
+        return;
+    }
+    let file = format!("{dir}{s}exclude");
+    let cur = std::fs::read_to_string(&file).unwrap_or_default();
+    if cur.lines().any(|l| l.trim() == ".agentspace/") {
+        return;
+    }
+    let _ = std::fs::create_dir_all(&dir);
+    let sep_nl = if cur.is_empty() || cur.ends_with('\n') { "" } else { "\n" };
+    let _ = std::fs::write(&file, format!("{cur}{sep_nl}.agentspace/\n"));
 }
 
 // -------------------------------------------------------------------- actions
@@ -171,7 +209,9 @@ pub fn branch_of(runtime: &str, dir: &str) -> Option<String> {
 
 /// Cut a worktree for one task. `id` only has to make the name unique among
 /// this repo's tasks, which is why a short slice of the task id is enough.
-pub fn create(runtime: &str, repo: &str, name: &str, id: &str, prefix: &str) -> Result<Tree, String> {
+pub fn create(
+    runtime: &str, repo: &str, name: &str, id: &str, prefix: &str, inside: bool,
+) -> Result<Tree, String> {
     let base = branch_of(runtime, repo).ok_or("Not a git repository")?;
     if base == "HEAD" {
         return Err("This repo is on a detached HEAD — check out a branch first.".into());
@@ -179,7 +219,12 @@ pub fn create(runtime: &str, repo: &str, name: &str, id: &str, prefix: &str) -> 
     let short: String = id.chars().skip(id.chars().count().saturating_sub(4)).collect();
     let folder = format!("{short}-{}", slug(name));
     let branch = format!("{prefix}{folder}");
-    let path = dir_for(repo, &folder);
+    let path = dir_for(repo, &folder, inside);
+    // Before the checkout exists, not after: `git status` is never dirty, and
+    // an agent that runs `git add -A` in its first second cannot catch it.
+    if inside {
+        exclude_worktrees(repo);
+    }
     git(runtime, repo, &["worktree", "add", "-b", &branch, &rt_path(runtime, &path), &base])?;
     link_deps(runtime, repo, &path);
     Ok(Tree { repo: repo.to_string(), path, branch, base })
@@ -187,30 +232,48 @@ pub fn create(runtime: &str, repo: &str, name: &str, id: &str, prefix: &str) -> 
 
 /// A fresh worktree has no `node_modules`, so the first thing any agent runs in
 /// it fails. Conductor and Vibe Kanban answer this with a setup script the user
-/// writes; a symlink back to the repo's own is free and covers the common case.
+/// writes; copying the repo's own is free and covers the common case.
 ///
-/// ponytail: the link is *shared* — an `npm install` inside one worktree edits
-/// the tree every other worktree and the repo itself are reading. Fine while
-/// tasks only build and test; the upgrade path is a per-task setup command
-/// (`npm ci`) in Settings, which is also the answer for repos that need one.
+/// Hard links (`cp -al`), not a symlink, and the difference is not taste:
+///
+///  * an *absolute* symlink dies the moment the tree is read through a mount at
+///    a different path — the dev container sees `/workspaces/repo`, so a link
+///    to `/home/me/repo/node_modules` dangles, and `ls` on a dangling link
+///    still exits 0, so it fails silently;
+///  * a *relative* one survives that but points out of the project root, which
+///    Next.js/Turbopack rejects outright ("Symlink node_modules is invalid").
+///
+/// A hard-linked tree is neither: real directory entries, no path in them, ~0
+/// bytes of disk, ~1s for 700MB. `ln -s` stays as the fallback for the one case
+/// hard links cannot do — a repo whose deps live on another filesystem.
+///
+/// Depth 1 as well as the root, because a monorepo keeps its deps per package
+/// (`main-api/node_modules`) and linking only the root is linking nothing.
+///
+/// ponytail: hard links mean `npm install` in a worktree *can* write through to
+/// a file the repo is reading, if a tool truncates in place instead of
+/// replacing. npm and pnpm replace; the upgrade path for one that does not is
+/// a per-workspace setup command running a real `npm ci`.
 fn link_deps(runtime: &str, repo: &str, tree: &str) {
-    let s = sep(repo);
-    for dep in ["node_modules", ".venv"] {
-        let src = format!("{}{s}{dep}", repo.trim_end_matches(['/', '\\']));
-        let dst = format!("{}{s}{dep}", tree.trim_end_matches(['/', '\\']));
-        if let Some(distro) = crate::wsl::distro_of(runtime) {
-            let (src, dst) = (rt_path(runtime, &src), rt_path(runtime, &dst));
-            let _ = crate::wsl::exec(&["-d", distro, "--", "sh", "-c",
-                &format!("[ -e {q}{src}{q} ] && ln -s {q}{src}{q} {q}{dst}{q}", q = '"')]);
-        } else if std::path::Path::new(&src).exists() {
-            // Windows needs elevation or developer mode to make a symlink, so
-            // the host branch there does nothing and the agent installs its own.
-            #[cfg(unix)]
-            let _ = std::os::unix::fs::symlink(&src, &dst);
-            #[cfg(windows)]
-            let _ = &dst;
-        }
+    let (src, dst) = (rt_path(runtime, repo), rt_path(runtime, tree));
+    // One shell snippet rather than a Rust walk: the listing, the test and the
+    // copy all have to happen on the machine that owns the files.
+    let script = format!(
+        r#"cd "{src}" 2>/dev/null || exit 0
+for d in node_modules .venv */node_modules */.venv; do
+  [ -d "$d" ] || continue
+  [ -e "{dst}/$d" ] && continue
+  mkdir -p "{dst}/$(dirname "$d")"
+  cp -al "{src}/$d" "{dst}/$d" 2>/dev/null || ln -s "{src}/$d" "{dst}/$d"
+done"#
+    );
+    if let Some(distro) = crate::wsl::distro_of(runtime) {
+        let _ = crate::wsl::exec(&["-d", distro, "--", "sh", "-c", &script]);
+    } else if cfg!(unix) {
+        let _ = crate::util::quiet_command("sh").arg("-c").arg(&script).output();
     }
+    // Windows host has no sh and no hard-link-a-tree in one call; the agent
+    // installs its own deps there, as it always has.
 }
 
 /// Every file the task changed against its base — committed or still dirty.
@@ -402,7 +465,7 @@ mod tests {
         git("host", &r, &["add", "-A"]).unwrap();
         git("host", &r, &["commit", "-qm", "first"]).unwrap();
 
-        let t = create("host", &r, "Fix the thing", "task-ab12", "as/").unwrap();
+        let t = create("host", &r, "Fix the thing", "task-ab12", "as/", false).unwrap();
         assert_eq!(t.base, "main");
         assert_eq!(t.branch, "as/ab12-fix-the-thing");
         assert!(std::path::Path::new(&t.path).is_dir(), "worktree not on disk");
@@ -452,11 +515,77 @@ mod tests {
 
     #[test]
     fn worktrees_sit_beside_the_repo_in_its_own_path_flavour() {
-        assert_eq!(dir_for("/home/t/bill", "ab12-fix"), "/home/t/bill.agentspace/ab12-fix");
-        assert_eq!(dir_for("/home/t/bill/", "ab12-fix"), "/home/t/bill.agentspace/ab12-fix");
+        assert_eq!(dir_for("/home/t/bill", "ab12-fix", false), "/home/t/bill.agentspace/ab12-fix");
+        assert_eq!(dir_for("/home/t/bill/", "ab12-fix", false), "/home/t/bill.agentspace/ab12-fix");
         assert_eq!(
-            dir_for("\\\\?\\UNC\\wsl.localhost\\Ubuntu\\home\\t\\bill", "ab12-fix"),
+            dir_for("\\\\?\\UNC\\wsl.localhost\\Ubuntu\\home\\t\\bill", "ab12-fix", false),
             "\\\\?\\UNC\\wsl.localhost\\Ubuntu\\home\\t\\bill.agentspace\\ab12-fix"
         );
+        // In-repo: same folder name, one level down, same separator flavour.
+        assert_eq!(dir_for("/home/t/bill", "ab12-fix", true), "/home/t/bill/.agentspace/ab12-fix");
+        assert_eq!(dir_for("/home/t/bill/", "ab12-fix", true), "/home/t/bill/.agentspace/ab12-fix");
+        assert_eq!(
+            dir_for("\\\\?\\UNC\\wsl.localhost\\Ubuntu\\home\\t\\bill", "ab12-fix", true),
+            "\\\\?\\UNC\\wsl.localhost\\Ubuntu\\home\\t\\bill\\.agentspace\\ab12-fix"
+        );
+    }
+
+    /// The in-repo worktree only stays out of the way if the exclude line lands
+    /// before the checkout does — and only once, however many tasks are cut.
+    #[test]
+    fn an_in_repo_worktree_hides_itself_and_its_deps_come_with_it() {
+        let root = std::env::temp_dir().join(format!("as-wt-in-{}", std::process::id()));
+        let repo = root.join("repo");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&repo).unwrap();
+        let r = repo.to_string_lossy().to_string();
+        for a in [
+            vec!["init", "-q", "-b", "main"],
+            vec!["config", "user.email", "t@example.com"],
+            vec!["config", "user.name", "t"],
+        ] {
+            git("host", &r, &a).unwrap();
+        }
+        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+        git("host", &r, &["add", "-A"]).unwrap();
+        git("host", &r, &["commit", "-qm", "first"]).unwrap();
+        // Deps at the root and one package deep — the monorepo shape.
+        std::fs::create_dir_all(repo.join("node_modules/left-pad")).unwrap();
+        std::fs::write(repo.join("node_modules/left-pad/index.js"), "module.exports=1\n").unwrap();
+        std::fs::create_dir_all(repo.join("api/node_modules/nest")).unwrap();
+        std::fs::write(repo.join("api/node_modules/nest/index.js"), "module.exports=2\n").unwrap();
+
+        let t = create("host", &r, "In repo", "task-cd34", "as/", true).unwrap();
+        assert!(t.path.contains(".agentspace"), "not in the hidden folder: {}", t.path);
+        assert!(std::path::Path::new(&t.path).starts_with(&repo), "not inside the repo: {}", t.path);
+
+        let excl = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+        assert_eq!(excl.lines().filter(|l| l.trim() == ".agentspace/").count(), 1);
+        // Real repos gitignore their deps; the fixture's are just untracked
+        // noise. What matters is that the checkout itself is invisible.
+        let st = git("host", &r, &["status", "--short"]).unwrap();
+        assert!(!st.contains("agentspace"), "the worktree is showing in git status: {st}");
+
+        // Cutting a second one must not write the line again.
+        let t2 = create("host", &r, "In repo two", "task-ef56", "as/", true).unwrap();
+        let excl = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+        assert_eq!(excl.lines().filter(|l| l.trim() == ".agentspace/").count(), 1, "exclude line duplicated");
+
+        if cfg!(unix) {
+            for dep in ["node_modules/left-pad/index.js", "api/node_modules/nest/index.js"] {
+                let p = std::path::Path::new(&t.path).join(dep);
+                assert!(p.is_file(), "deps not carried into the worktree: {dep}");
+                // Hard link, not a copy and not a symlink: same file, no path in it.
+                assert!(!p.is_symlink(), "{dep} came across as a symlink");
+                assert_eq!(
+                    std::fs::read_to_string(&p).unwrap(),
+                    std::fs::read_to_string(repo.join(dep)).unwrap(),
+                );
+            }
+        }
+
+        remove("host", &t, true).unwrap();
+        remove("host", &t2, true).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

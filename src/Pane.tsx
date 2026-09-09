@@ -72,6 +72,11 @@ export default function Pane({
         term.clearSelection();
         return false;
       }
+      // Webview vẫn bắn sự kiện paste vào textarea của xterm, nên đừng tự đọc
+      // clipboard — sẽ dán hai lần. Chỉ cần chặn xterm đẩy Ctrl+V xuống PTY:
+      // \x16 là quoted-insert của shell, nó nuốt mất ký tự đầu của đoạn dán.
+      // return false không gọi preventDefault nên paste mặc định vẫn chạy.
+      if (e.type === "keydown" && ((e.ctrlKey && !e.altKey && e.key.toLowerCase() === "v") || (e.shiftKey && !e.ctrlKey && !e.altKey && e.key === "Insert"))) return false;
       if (e.type === "keydown" && e.ctrlKey && !e.altKey && e.key.toLowerCase() === "f") {
         setFind((f) => f ?? "");
         queueMicrotask(() => findBox.current?.focus());

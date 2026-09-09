@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { open as pickFolder } from "@tauri-apps/plugin-dialog";
+import { open as pickFolder, confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
@@ -15,6 +15,7 @@ import { agentOf, allBins, launchArgs, launchCommand, type Slot } from "./agents
 import { applyTheme, themeById } from "./themes";
 import { applyZoom, loadZoom, nextZoom, ZOOM_DEFAULT } from "./zoom";
 import { reorder } from "./reorder";
+import { expand, freeSlot, saveSetup, setupFor } from "./setup";
 import { loudest, type Status } from "./task";
 import {
   ago, api, blockTokens, fmtTokens, fmtUsd, shortPath, until,
@@ -31,7 +32,12 @@ type Todo = { content: string; activeForm?: string; status: string };
  *  each other's files, and a task with a single pane is already full per-agent
  *  isolation. Absent on folders that are not git checkouts — those run in the
  *  workspace itself, exactly as every task did before. */
-type Task = { id: string; wsId: string; name: string; wt?: Tree };
+type Task = {
+  id: string; wsId: string; name: string; wt?: Tree;
+  /** Số riêng của tác vụ trong workspace, để lệnh dựng môi trường tránh đụng
+   *  cổng với worktree khác. Chỉ tác vụ có worktree mới cần. */
+  n?: number;
+};
 type PaneInfo = {
   id: string; taskId: string; cwd: string; runtime: string; status: Status;
   /** Which CLI this terminal was opened for — why a Codex terminal does not
@@ -492,10 +498,14 @@ export default function App() {
     // the plain behaviour of working in the workspace itself rather than
     // failing to make a task at all.
     let wt: Tree | undefined;
+    let n = 0;
     if (spec.worktree) {
       try {
-        wt = await api.worktreeCreate(w.path, spec.name, id, spec.runtime);
-        setTasks((all) => all.map((t) => (t.id === id ? { ...t, wt } : t)));
+        wt = await api.worktreeCreate(w.path, spec.name, id, spec.inside, spec.runtime);
+        // Số lấy sau khi cắt xong: hai tác vụ tạo liên tiếp mà cùng đọc danh
+        // sách cũ thì cùng nhận số 1, và cùng chết ở cổng 3000.
+        n = freeSlot(now.current.tasks.filter((t) => t.wt && t.id !== id).map((t) => t.n ?? 0));
+        setTasks((all) => all.map((t) => (t.id === id ? { ...t, wt, n } : t)));
       } catch {
         wt = undefined;
       }
@@ -507,17 +517,59 @@ export default function App() {
     for (const s of new Set(spec.slots))
       cmd.set(s, await agentCommand(s, spec.runtime, spec.prompt, spec.continueLast));
     spec.slots.forEach((s) => addPane(dir, id, cmd.get(s) || undefined, spec.runtime, s));
+    // Worktree là thư mục trống về mặt runtime: server đang chạy ở repo gốc
+    // không phục vụ nó. Một terminal nữa, chạy sẵn thứ dựng app lên, là khác
+    // biệt giữa "mở task ra làm" và "mở task ra rồi đi bật lại mọi thứ".
+    if (wt) {
+      saveSetup(w.id, spec.setup);
+      const folder = wt.path.split(/[/\\]/).filter(Boolean).pop() ?? spec.name;
+      if (spec.setup)
+        addPane(dir, id, expand(spec.setup, { n, task: folder, tree: dir }), spec.runtime);
+    }
   }, [addPane, agentCommand]);
 
-  const closeTask = useCallback((id: string) => {
-    // A worktree outlives the task that made it, on purpose: the terminals are
-    // disposable, the branch is the work. Closing here only stops asking about
-    // it — Review is the only place a branch is merged or deleted.
+  /** The branch landed or went in the bin; either way the checkout has to go —
+   *  and it can only go once nothing is standing in it. A shell whose cwd is
+   *  the worktree holds that directory open on Windows, so the terminals close
+   *  first and the removal waits for their PTYs to actually die. */
+  const endWorktree = useCallback(async (id: string, tree: Tree, rt: string) => {
+    setReviewId(null);
+    setPanes((all) => all.filter((p) => p.taskId !== id));
+    setTasks((all) => all.filter((t) => t.id !== id));
+    // ponytail: a fixed wait, not a handshake — pty_close is fire-and-forget on
+    // both sides. The upgrade path is an event from Rust when the child reaps.
+    await new Promise((r) => setTimeout(r, 500));
+    await api.worktreeRemove(tree, true, rt).catch((e) =>
+      setNotice(`The branch is dealt with, but ${tree.path} is still on disk: ${e}`));
+  }, []);
+
+  /** Closing a task always closes its terminals; what happens to its worktree
+   *  is the user's call, so a task that has one asks.
+   *
+   *  Keeping is the default action because it is the recoverable one: a
+   *  checkout closed by accident is reopened, a branch deleted by accident is
+   *  gone. But *not* asking at all was the real bug — the checkout and its
+   *  branch outlived every trace of the task in the UI, so nothing ever
+   *  offered to clean them up again.
+   *
+   *  `ask=false` is for closing a whole workspace's tasks at once, where one
+   *  native dialog per task is worse than the leak it prevents. */
+  const closeTask = useCallback(async (id: string, ask = true) => {
+    const t = tasks.find((x) => x.id === id);
+    if (ask && t?.wt) {
+      const rt = panes.find((p) => p.taskId === id)?.runtime ?? runtime;
+      const drop = await confirmDialog(
+        `Delete the worktree ${shortPath(t.wt.path)} and its branch ${t.wt.branch} too?\n\n` +
+          "Anything not merged or committed there is lost. Keep it and you can reopen the branch later from a new task.",
+        { title: "Close task", kind: "warning", okLabel: "Delete worktree", cancelLabel: "Keep it" },
+      ).catch(() => false);
+      if (drop) return endWorktree(id, t.wt, rt);
+    }
     // Panes unmount with the task, and Pane's cleanup kills their PTYs — that
     // is the point: closing a task closes the terminals doing it.
     setPanes((all) => all.filter((p) => p.taskId !== id));
-    setTasks((all) => all.filter((t) => t.id !== id));
-  }, []);
+    setTasks((all) => all.filter((x) => x.id !== id));
+  }, [tasks, panes, runtime, endWorktree]);
 
   /** Nơi terminal của một tác vụ mở ra: worktree nếu có, không thì thư mục
    *  workspace — và "~" cho tác vụ nháp, thứ không thuộc workspace nào. */
@@ -546,21 +598,6 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [openScratch]);
-
-  /** The branch landed or went in the bin; either way the checkout has to go —
-   *  and it can only go once nothing is standing in it. A shell whose cwd is
-   *  the worktree holds that directory open on Windows, so the terminals close
-   *  first and the removal waits for their PTYs to actually die. */
-  const endWorktree = useCallback(async (id: string, tree: Tree, rt: string) => {
-    setReviewId(null);
-    setPanes((all) => all.filter((p) => p.taskId !== id));
-    setTasks((all) => all.filter((t) => t.id !== id));
-    // ponytail: a fixed wait, not a handshake — pty_close is fire-and-forget on
-    // both sides. The upgrade path is an event from Rust when the child reaps.
-    await new Promise((r) => setTimeout(r, 500));
-    await api.worktreeRemove(tree, true, rt).catch((e) =>
-      setNotice(`The branch is dealt with, but ${tree.path} is still on disk: ${e}`));
-  }, []);
 
   const commitTaskName = () => {
     if (!renaming) return;
@@ -613,7 +650,7 @@ export default function App() {
   const togglePin = (w: Workspace) => api.updateWorkspace(w.id, { favorite: !w.favorite }).then(setWorkspaces);
 
   const removeWorkspace = (w: Workspace) => {
-    tasks.filter((t) => t.wsId === w.id).forEach((t) => closeTask(t.id));
+    tasks.filter((t) => t.wsId === w.id).forEach((t) => void closeTask(t.id, false));
     api.removeWorkspace(w.id).then(setWorkspaces);
   };
 
@@ -767,7 +804,7 @@ export default function App() {
                   <span className="n">{scratch.name}</span>
                   {scratchPanes.length > 1 && <span className="c">{scratchPanes.length}</span>}
                   <button className="x" title="Đóng tác vụ nháp và mọi terminal của nó"
-                          onClick={(e) => { e.stopPropagation(); closeTask(scratch.id); }}>×</button>
+                          onClick={(e) => { e.stopPropagation(); void closeTask(scratch.id); }}>×</button>
                 </div>
               )}
             </div>
@@ -883,7 +920,7 @@ export default function App() {
                                       addPane(taskDir(t), t.id);
                                     }}>+</button>
                             <button className="x" title="Close the task and all its terminals"
-                                    onClick={(e) => { e.stopPropagation(); closeTask(t.id); }}>×</button>
+                                    onClick={(e) => { e.stopPropagation(); void closeTask(t.id); }}>×</button>
                           </div>
                         );
                       })}
@@ -1108,6 +1145,7 @@ export default function App() {
       {newTaskWs && (
         <TaskSheet wsName={label(newTaskWs)} wsPath={newTaskWs.path} runtimes={runtimes} runtime={runtime}
                    branch={git[newTaskWs.path]?.isRepo ? git[newTaskWs.path].branch || "HEAD" : ""}
+                   setup={setupFor(newTaskWs.id)}
                    probe={installedBins} onCancel={() => setNewTaskWs(null)}
                    onCreate={(spec) => createTask(newTaskWs, spec)} />
       )}

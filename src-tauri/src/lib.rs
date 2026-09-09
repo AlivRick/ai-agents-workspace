@@ -273,10 +273,10 @@ async fn git_info(paths: Vec<String>, runtime: Option<String>) -> Result<Vec<sto
 /// does — the frontend falls back to the workspace path.
 #[tauri::command]
 async fn worktree_create(
-    runtime: Option<String>, repo: String, name: String, id: String,
+    runtime: Option<String>, repo: String, name: String, id: String, inside: bool,
 ) -> Result<worktree::Tree, String> {
     let r = rt(runtime);
-    blocking(move || worktree::create(&r, &repo, &name, &id, "as/")).await?
+    blocking(move || worktree::create(&r, &repo, &name, &id, "as/", inside)).await?
 }
 
 /// What the task changed, committed or not, plus how far its branch has drifted.

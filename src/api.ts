@@ -126,8 +126,8 @@ export const api = {
   ptyWrite: (id: string, data: string) => writes.write(id, data),
   ptyResize: (id: string, cols: number, rows: number) => invoke<void>("pty_resize", { id, cols, rows }),
   ptyClose: (id: string) => { writes.forget(id); return invoke<void>("pty_close", { id }); },
-  worktreeCreate: (repo: string, name: string, id: string, runtime?: string) =>
-    invoke<Tree>("worktree_create", { repo, name, id, runtime }),
+  worktreeCreate: (repo: string, name: string, id: string, inside: boolean, runtime?: string) =>
+    invoke<Tree>("worktree_create", { repo, name, id, inside, runtime }),
   worktreeReview: (tree: Tree, runtime?: string) => invoke<Review>("worktree_review", { tree, runtime }),
   worktreeCommit: (tree: Tree, message: string, runtime?: string) =>
     invoke<void>("worktree_commit", { tree, message, runtime }),
