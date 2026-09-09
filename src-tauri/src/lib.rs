@@ -254,8 +254,9 @@ fn update_workspace(
     id: String,
     name: Option<String>,
     favorite: Option<bool>,
+    icon: Option<String>,
 ) -> Vec<store::Workspace> {
-    app.store.lock().unwrap().update(&id, name, favorite);
+    app.store.lock().unwrap().update(&id, name, favorite, icon);
     app.persist();
     app.store.lock().unwrap().workspaces.clone()
 }

@@ -14,7 +14,7 @@ export type EngineStatus = {
   authSource: "subscription" | "api-key" | "none";
   account: Account | null; problem: string | null;
 };
-export type Workspace = { id: string; path: string; name: string; addedAtMs: number; favorite: boolean };
+export type Workspace = { id: string; path: string; name: string; addedAtMs: number; favorite: boolean; icon: string };
 export type GitInfo = { path: string; isRepo: boolean; branch: string; dirty: number };
 /** The worktree one task works in, and the branch its result goes back to. */
 export type Tree = { repo: string; path: string; branch: string; base: string };
@@ -87,7 +87,7 @@ export const api = {
   addWorkspaces: (paths: string[]) => invoke<Workspace[]>("add_workspaces", { paths }),
   claudeProjects: (runtime?: string) => invoke<string[]>("claude_projects", { runtime }),
   removeWorkspace: (id: string) => invoke<Workspace[]>("remove_workspace", { id }),
-  updateWorkspace: (id: string, patch: { name?: string; favorite?: boolean }) =>
+  updateWorkspace: (id: string, patch: { name?: string; favorite?: boolean; icon?: string }) =>
     invoke<Workspace[]>("update_workspace", { id, ...patch }),
   gitInfo: (paths: string[], runtime?: string) => invoke<GitInfo[]>("git_info", { paths, runtime }),
   saveLayout: (layout: unknown) => invoke<void>("save_layout", { layout }),
