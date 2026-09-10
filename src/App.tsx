@@ -111,6 +111,8 @@ export default function App() {
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
   const [panes, setPanes] = useState<PaneInfo[]>([]);
   const dragPane = useRef<string | null>(null);
+  const dragWs = useRef<string | null>(null);
+  const [overWs, setOverWs] = useState<string | null>(null);
   const [overPane, setOverPane] = useState<string | null>(null);
   const [focus, setFocus] = useState<string | null>(null);
   const [showBlocks, setShowBlocks] = useState<string | null>(null);
@@ -657,6 +659,14 @@ export default function App() {
     setWorkspaces(await api.addWorkspaces(paths));
   };
 
+  // Thả lên workspace khác nhóm ghim thì đổi ghim theo, không thì sort lại
+  // đẩy nó về nhóm cũ và cú kéo trông như không ăn.
+  const moveWorkspace = async (id: string, to: Workspace) => {
+    const from = workspaces.find((w) => w.id === id);
+    if (!from || from.id === to.id) return;
+    if (from.favorite !== to.favorite) await api.updateWorkspace(id, { favorite: to.favorite });
+    setWorkspaces(await api.moveWorkspace(id, to.id));
+  };
   const togglePin = (w: Workspace) => api.updateWorkspace(w.id, { favorite: !w.favorite }).then(setWorkspaces);
 
   const setIcon = (id: string, icon: string) => {
@@ -681,7 +691,8 @@ export default function App() {
   const visibleWs = useMemo(() => {
     const q = wsQuery.trim().toLowerCase();
     const list = q ? workspaces.filter((w) => (w.name + w.path).toLowerCase().includes(q)) : workspaces;
-    return [...list].sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.name.localeCompare(b.name));
+    // Sort ổn định: chỉ kéo ghim lên trên, còn lại giữ thứ tự bạn đã kéo thả.
+    return [...list].sort((a, b) => Number(b.favorite) - Number(a.favorite));
   }, [workspaces, wsQuery]);
   const firstUnpinned = visibleWs.findIndex((w) => !w.favorite);
 
@@ -873,7 +884,20 @@ export default function App() {
               return (
                 <div key={w.id}>
                   {i === firstUnpinned && i > 0 && <div className="sep" />}
-                  <div className={"ws" + (open ? " on" : "")} onClick={() => setWsId(w.id)} title={w.path}>
+                  <div className={"ws" + (open ? " on" : "") + (overWs === w.id ? " over" : "")}
+                       onClick={() => setWsId(w.id)} title={w.path} draggable
+                       onDragStart={(e) => { dragWs.current = w.id; e.dataTransfer.effectAllowed = "move"; }}
+                       onDragEnd={() => { dragWs.current = null; setOverWs(null); }}
+                       onDragOver={(e) => {
+                         if (!dragWs.current || dragWs.current === w.id) return;
+                         e.preventDefault(); setOverWs(w.id);
+                       }}
+                       onDragLeave={() => setOverWs((o) => (o === w.id ? null : o))}
+                       onDrop={(e) => {
+                         e.preventDefault();
+                         if (dragWs.current) void moveWorkspace(dragWs.current, w);
+                         dragWs.current = null; setOverWs(null);
+                       }}>
                     <button className={"pin" + (w.favorite ? " on" : "")} title={w.favorite ? "Unpin" : "Pin to top and keep its tasks listed"}
                             onClick={(e) => { e.stopPropagation(); togglePin(w); }}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill={w.favorite ? "currentColor" : "none"}

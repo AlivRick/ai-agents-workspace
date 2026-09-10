@@ -89,6 +89,7 @@ export const api = {
   removeWorkspace: (id: string) => invoke<Workspace[]>("remove_workspace", { id }),
   updateWorkspace: (id: string, patch: { name?: string; favorite?: boolean; icon?: string }) =>
     invoke<Workspace[]>("update_workspace", { id, ...patch }),
+  moveWorkspace: (id: string, to: string) => invoke<Workspace[]>("move_workspace", { id, to }),
   gitInfo: (paths: string[], runtime?: string) => invoke<GitInfo[]>("git_info", { paths, runtime }),
   saveLayout: (layout: unknown) => invoke<void>("save_layout", { layout }),
   loadLayout: () => invoke<any>("load_layout"),

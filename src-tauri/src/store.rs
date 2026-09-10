@@ -82,6 +82,16 @@ impl Store {
         self.workspaces.retain(|w| w.id != id);
     }
 
+    /// Đặt `id` vào chỗ của `to`; thứ tự mảng chính là thứ tự bày ở sidebar.
+    pub fn reorder(&mut self, id: &str, to: &str) {
+        let (Some(i), Some(j)) = (
+            self.workspaces.iter().position(|w| w.id == id),
+            self.workspaces.iter().position(|w| w.id == to),
+        ) else { return };
+        let w = self.workspaces.remove(i);
+        self.workspaces.insert(j, w);
+    }
+
     pub fn update(&mut self, id: &str, name: Option<String>, favorite: Option<bool>, icon: Option<String>) {
         if let Some(w) = self.workspaces.iter_mut().find(|w| w.id == id) {
             if let Some(n) = name {
@@ -177,4 +187,24 @@ pub fn git_info(paths: Vec<String>, runtime: &str) -> Vec<GitInfo> {
             .collect();
         handles.into_iter().filter_map(|h| h.join().ok()).flatten().collect()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reorder_moves_to_target_slot() {
+        let mut s = Store::default();
+        for id in ["a", "b", "c"] {
+            s.workspaces.push(Workspace {
+                id: id.into(), path: id.into(), name: id.into(), added_at_ms: 0, favorite: false, icon: String::new(),
+            });
+        }
+        s.reorder("c", "a");
+        let ids: Vec<&str> = s.workspaces.iter().map(|w| w.id.as_str()).collect();
+        assert_eq!(ids, ["c", "a", "b"]);
+        s.reorder("zzz", "a"); // id lạ: không đổi gì, không panic
+        assert_eq!(s.workspaces.len(), 3);
+    }
 }

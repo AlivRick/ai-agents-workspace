@@ -262,6 +262,13 @@ fn update_workspace(
 }
 
 #[tauri::command]
+fn move_workspace(app: State<App>, id: String, to: String) -> Vec<store::Workspace> {
+    app.store.lock().unwrap().reorder(&id, &to);
+    app.persist();
+    app.store.lock().unwrap().workspaces.clone()
+}
+
+#[tauri::command]
 async fn git_info(paths: Vec<String>, runtime: Option<String>) -> Result<Vec<store::GitInfo>, String> {
     let r = rt(runtime);
     blocking(move || store::git_info(paths, &r)).await
@@ -701,6 +708,7 @@ pub fn run() {
             add_workspaces,
             remove_workspace,
             update_workspace,
+            move_workspace,
             git_info,
             worktree_create,
             worktree_review,
