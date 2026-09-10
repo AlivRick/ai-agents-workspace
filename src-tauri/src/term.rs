@@ -132,6 +132,11 @@ const PWSH_INIT: &str = r#"if ($env:AGENTSPACE_SI -eq $null) {
 /// the poller can never observe a half-written event.
 pub fn write_hook_settings(dir: &Path) -> std::io::Result<PathBuf> {
     let inbox = dir.join("hook-events");
+    // Sự kiện còn sót là của lần chạy trước: lúc tắt app, PTY chết kéo theo
+    // claude, nó kịp bắn SessionEnd ra đĩa khi không còn ai đọc. Để lại thì
+    // lần mở sau drain phải nó và xoá mất sessionId của đúng pane vừa khôi
+    // phục (pane id không đổi qua các lần chạy) — pane thành shell trắng.
+    let _ = std::fs::remove_dir_all(&inbox);
     std::fs::create_dir_all(&inbox)?;
 
     let cmd = r#"if [ -n "$AGENTSPACE_HOOK_DIR" ]; then f="$AGENTSPACE_HOOK_DIR/${AGENTSPACE_PANE:-x}.$(date +%s%N).$$"; cat > "$f.part" && mv "$f.part" "$f.json"; else cat > /dev/null; fi"#;
@@ -515,6 +520,12 @@ mod tests {
 
         // Và hộp thư trống thì drain trả về rỗng, không lỗi.
         assert!(drain_hooks(&dir).is_empty());
+
+        // Sự kiện sót lại của lần chạy trước bị dọn lúc ghi settings, không
+        // thì nó xoá sessionId của pane vừa khôi phục ở lần mở kế tiếp.
+        std::fs::write(dir.join("hook-events/p1.1.9.json"), r#"{"hook_event_name":"SessionEnd"}"#).unwrap();
+        write_hook_settings(&dir).unwrap();
+        assert!(drain_hooks(&dir).is_empty(), "hook cũ phải bị dọn khi khởi động");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
