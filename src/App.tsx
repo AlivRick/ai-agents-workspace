@@ -11,7 +11,7 @@ import UsageView from "./UsageView";
 import WorkspaceView, { TABS as WS_TABS, type Tab as WsTab } from "./WorkspaceView";
 import TaskSheet, { AgentIcon, type TaskSpec } from "./TaskSheet";
 import DiffSheet from "./DiffSheet";
-import { agentOf, allBins, launchArgs, launchCommand, type Slot } from "./agents";
+import { AGENTS, agentOf, allBins, launchArgs, launchCommand, type Slot } from "./agents";
 import { applyTheme, themeById } from "./themes";
 import { applyZoom, loadZoom, nextZoom, ZOOM_DEFAULT } from "./zoom";
 import { reorder } from "./reorder";
@@ -68,9 +68,8 @@ const STATUS: Record<Status, [string, string]> = {
   idle: ["", "ready"], run: ["run", "working"], att: ["att", "waiting for you"], done: ["done", "done"],
 };
 const PIN = "M9 3h6l-1 6 4 3v2h-5v7l-1 1-1-1v-7H6v-2l4-3z";
-/** Bộ icon cho workspace. ponytail: một danh sách emoji cố định, không phải
- *  emoji picker đầy đủ — trần của nó là bạn chỉ chọn được trong 30 cái này;
- *  nâng cấp là cho gõ emoji tự do vào một ô input. */
+/** Emoji gợi ý sẵn cho workspace. Muốn cái khác thì gõ vào ô bên dưới bảng —
+ *  `Win + .` mở bảng emoji đầy đủ của Windows, không cần picker riêng. */
 const WS_ICONS = [
   "📁", "⭐", "🔥", "🚀", "🧪", "🐛", "🔧", "📦", "🧠", "💡",
   "🎯", "🎨", "🌱", "🌊", "🍀", "🐙", "🐧", "🦀", "⚡", "🛡️",
@@ -106,6 +105,8 @@ export default function App() {
   const [reviewId, setReviewId] = useState<string | null>(null);
   /** Workspace đang mở bảng chọn icon (null = đóng). */
   const [iconFor, setIconFor] = useState<string | null>(null);
+  /** Menu "+" của một tác vụ: chọn Terminal hay agent nào cho pane mới. */
+  const [addMenu, setAddMenu] = useState<{ tid: string; dir: string; rt: string; x: number; y: number; found: string[] } | null>(null);
   /** Something the app could not finish and you have to know about. */
   const [notice, setNotice] = useState<string>("");
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
@@ -589,6 +590,27 @@ export default function App() {
     t.wt?.path ?? (t.wsId === SCRATCH ? "~" : workspaces.find((w) => w.id === t.wsId)?.path ?? "~"),
   [workspaces]);
 
+  /** "+" on a task: open a menu with Terminal and every agent instead of a
+   *  bare shell, so nobody has to type `claude` by hand and lose the hooks
+   *  (a hand-typed claude has no session id, so it is not resumed on restart). */
+  const openAdd = useCallback(async (e: React.MouseEvent, t: Task) => {
+    e.stopPropagation();
+    setTaskId(t.id);
+    // New pane runs where the task's other panes run; a task with no pane
+    // yet follows the runtime picked in the header.
+    const rt = now.current.panes.find((p) => p.taskId === t.id)?.runtime ?? runtime;
+    const found = await installedBins(rt).catch(() => [] as string[]);
+    setAddMenu({ tid: t.id, dir: taskDir(t), rt, x: e.clientX, y: e.clientY, found });
+  }, [runtime, installedBins, taskDir]);
+
+  const pickAdd = useCallback(async (agent: Slot) => {
+    const m = addMenu;
+    setAddMenu(null);
+    if (!m) return;
+    const cmd = agent === "terminal" ? "" : await agentCommand(agent, m.rt);
+    addPane(m.dir, m.tid, cmd || undefined, m.rt, agent);
+  }, [addMenu, agentCommand, addPane]);
+
   /** Terminal mở nhanh: không hỏi workspace, không hỏi agent, chỉ một shell ở
    *  thư mục nhà. Lần đầu tạo luôn tác vụ nháp; những lần sau thêm terminal vào
    *  chính nó. */
@@ -885,7 +907,8 @@ export default function App() {
                 <div key={w.id}>
                   {i === firstUnpinned && i > 0 && <div className="sep" />}
                   <div className={"ws" + (open ? " on" : "") + (overWs === w.id ? " over" : "")}
-                       onClick={() => setWsId(w.id)} title={w.path} draggable
+                       onClick={() => setWsId(w.id)} draggable
+                       title={[label(w), w.path, g?.isRepo ? `branch: ${g.branch}` : ""].filter(Boolean).join("\n")}
                        onDragStart={(e) => { dragWs.current = w.id; e.dataTransfer.effectAllowed = "move"; }}
                        onDragEnd={() => { dragWs.current = null; setOverWs(null); }}
                        onDragOver={(e) => {
@@ -905,15 +928,8 @@ export default function App() {
                     </button>
                     {w.icon && <span className="ic">{w.icon}</span>}
                     <span className="n">{label(w)}</span>
-                    {/* Two elements, not one string: glued together, the dirty
-                        count is the tail of the text that gets ellipsised away,
-                        so it vanished on exactly the long branch names where
-                        you most want to know the repo is dirty. */}
                     {g?.isRepo && (
-                      <span className="b" title={g.dirty ? `${g.branch} — ${g.dirty} file(s) changed` : g.branch}>
-                        <i className="br">{g.branch}</i>
-                        {g.dirty > 0 && <i className="dc">·{g.dirty}</i>}
-                      </span>
+                      <span className="b"><i className="br">{g.branch}</i></span>
                     )}
                     {/* Only worth a badge while the tasks are hidden — once the
                         list is open underneath, the number is counting things
@@ -953,12 +969,8 @@ export default function App() {
                             {/* "1" on a task with one terminal is noise on every
                                 row; the count only says something at two. */}
                             {its.length > 1 && <span className="c">{its.length}</span>}
-                            <button className="x" title="Add a terminal to this task"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setTaskId(t.id);
-                                      addPane(taskDir(t), t.id);
-                                    }}>+</button>
+                            <button className="x" title="Add a terminal or an agent to this task"
+                                    onClick={(e) => void openAdd(e, t)}>+</button>
                             <button className="x" title="Close the task and all its terminals"
                                     onClick={(e) => { e.stopPropagation(); void closeTask(t.id); }}>×</button>
                           </div>
@@ -999,6 +1011,15 @@ export default function App() {
                         <button key={e} className={ws.icon === e ? "on" : ""}
                                 onClick={() => setIcon(ws.id, e)}>{e}</button>
                       ))}
+                      {/* Chỉ lấy một ký tự "nhìn thấy" (grapheme): emoji có
+                          cờ/da/ZWJ là nhiều code point, cắt bằng slice là gãy. */}
+                      <input className="free" placeholder="Gõ emoji bất kỳ (Win + .)" autoFocus
+                             onChange={(e) => {
+                               const v = e.target.value.trim();
+                               if (!v) return;
+                               const [first] = [...new Intl.Segmenter().segment(v)];
+                               setIcon(ws.id, first.segment);
+                             }} />
                       <button className="clear" onClick={() => setIcon(ws.id, "")}
                               title="Bỏ icon">Bỏ icon</button>
                     </div>
@@ -1035,7 +1056,7 @@ export default function App() {
                     {task ? (
                       <>
                         <p>Task “{task.name}” has no terminals left.</p>
-                        <button className="btn primary" onClick={() => addPane(taskDir(task), task.id)}>+ Terminal</button>
+                        <button className="btn primary" onClick={(e) => void openAdd(e, task)}>+ Terminal / agent</button>
                       </>
                     ) : !ws ? (
                       <>
@@ -1202,6 +1223,25 @@ export default function App() {
       {importable && (
         <ImportSheet paths={importable} onCancel={() => setImportable(null)} onConfirm={confirmImport} />
       )}
+
+      {addMenu && (
+          <>
+            <div className="icon-back" onClick={() => setAddMenu(null)} />
+            <div className="add-menu" style={{ left: Math.min(addMenu.x, window.innerWidth - 200), top: Math.min(addMenu.y, window.innerHeight - 40 * AGENTS.length) }}>
+              {[...AGENTS].sort((a, b) => (a.id === "terminal" ? -1 : b.id === "terminal" ? 1 : 0)).map((a) => {
+                // Same rule as TaskSheet: an empty probe means "could not ask the
+                // shell", not "nothing installed" — never grey out on it.
+                const missing = a.bins.length > 0 && addMenu.found.length > 0 && !a.bins.some((b) => addMenu.found.includes(b));
+                return (
+                  <button key={a.id} disabled={missing} onClick={() => void pickAdd(a.id)}
+                          title={missing ? `${a.bins[0]} is not on PATH in this runtime` : a.note}>
+                    <AgentIcon agent={a.id} size={14} />{a.name}
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
 
       {newTaskWs && (
         <TaskSheet wsName={label(newTaskWs)} wsPath={newTaskWs.path} runtimes={runtimes} runtime={runtime}
