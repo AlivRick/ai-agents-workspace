@@ -222,6 +222,16 @@ pub fn diff(runtime: &str, root: &str, file: &str, staged: bool) -> Result<Strin
     git(runtime, root, &a)
 }
 
+/// The file as HEAD has it, for the editor's change bars. `None` when HEAD has
+/// no such file (new, untracked, ignored, or no commits yet) — the frontend
+/// decides which of those means "all added".
+///
+/// ponytail: `git()` trims trailing whitespace, so a final newline is lost; the
+/// editor puts it back when the working file has one.
+pub fn original(runtime: &str, root: &str, file: &str) -> Option<String> {
+    git(runtime, root, &["show", &format!("HEAD:{file}")]).ok()
+}
+
 /// ponytail: unstaging is `git restore --staged`, which needs a first commit
 /// (git 2.23+). In a brand-new repo it errors; `git rm --cached` is the fallback.
 pub fn stage(runtime: &str, root: &str, files: &[String], on: bool) -> Result<(), String> {

@@ -2,8 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Marked } from "marked";
 import { api, shortPath, type Entry, type ScmItem, type ScmStatus } from "./api";
 import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
+import CodeEditor from "./CodeEditor";
 import { parseDiff, sideBySide, type Row } from "./diff";
 import { allFiles, buildTree, type Folder } from "./scmtree";
+import { fileIcon, folderIcon, type IconTable } from "./icons";
+import iconTable from "./icons.gen.json";
 
 /** A file on screen. `rel` is set when git knows it changed — that is what
  *  makes the Diff tab available. */
@@ -27,6 +30,9 @@ const cell = (r: Row | null, side: "old" | "new", changed: boolean) => (
     <span className={"tx" + (!r ? " none" : changed ? (side === "old" ? " del" : " add") : "")}>{r?.text ?? ""}</span>
   </>
 );
+const T = iconTable as IconTable;
+/** A Material Icon Theme icon, the set VS Code users know. */
+const Ico = ({ k }: { k: string }) => <img className="fi" src={`/material/${k}.svg`} alt="" draggable={false} />;
 const isMd = (p: string) => /\.(md|markdown|mdx)$/i.test(p);
 const base = (p: string) => p.split(/[\\/]/).pop() ?? p;
 
@@ -35,9 +41,7 @@ const base = (p: string) => p.split(/[\\/]/).pop() ?? p;
  * agent did: browse the tree, edit a file, read a README rendered, stage and
  * commit.
  *
- * ponytail: a textarea, not a code editor — no syntax colours, no line
- * numbers, no find. The upgrade path is CodeMirror 6 in place of the textarea;
- * everything around it (open/save/diff) stays.
+ * The editor itself is CodeMirror 6 (see CodeEditor.tsx).
  */
 export default function FilesView({ root, name, runtime, terminals, docked, onDock }: {
   root: string; name: string; runtime: string;
@@ -51,6 +55,8 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
   const [text, setText] = useState("");
   const [saved, setSaved] = useState("");
   const [readErr, setReadErr] = useState("");
+  /** HEAD's copy of the open file, for the editor's change bars. */
+  const [orig, setOrig] = useState<string | null | undefined>(undefined);
   const [diff, setDiff] = useState("");
   const [error, setError] = useState("");
   const [msg, setMsg] = useState("");
@@ -148,6 +154,19 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
     return () => { live = false; };
   }, [open, root, runtime, tick]);
 
+  // Re-read when git status moves (a commit changes HEAD, so the bars reset).
+  useEffect(() => {
+    setOrig(undefined);
+    if (!open?.abs || !scm?.isRepo) return;
+    const i = [...scm.changes, ...scm.staged].find((c) => c.abs === open.abs);
+    // Untracked or newly added: HEAD has nothing, every line is new.
+    if (i && (i.status === "U" || i.status === "A")) return setOrig(null);
+    if (!i) return; // unchanged since HEAD (or ignored): no bars to draw
+    let live = true;
+    api.scmOriginal(root, i.path, runtime).then((o) => live && setOrig(o ?? undefined)).catch(() => {});
+    return () => { live = false; };
+  }, [open, scm, root, runtime]);
+
   /** Status letter per on-disk path, so the tree can mark changed files. */
   const marks = useMemo(() => {
     const m: Record<string, string> = {};
@@ -208,14 +227,7 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
   /** Nothing staged means "commit everything", VS Code's smart commit. */
   const commit = () => canCommit && run(async () => { await api.scmCommit(root, msg, nothingStaged, runtime); setMsg(""); });
 
-  const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); save(); }
-    else if (e.key === "Tab" && !e.shiftKey) {
-      e.preventDefault();
-      e.currentTarget.setRangeText("  ", e.currentTarget.selectionStart, e.currentTarget.selectionEnd, "end");
-      setText(e.currentTarget.value);
-    }
-  };
+
 
   const tree = (dir: string, depth: number): React.ReactNode =>
     kids[dir]?.map((e) => (
@@ -223,6 +235,7 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
         <button className={"frow" + (open?.abs === e.path ? " on" : "")} style={{ paddingLeft: 7 + depth * 12 }}
                 onClick={() => (e.dir ? toggle(e.path) : fromTree(e))} title={e.path}>
           <span className="tw">{e.dir ? (kids[e.path] ? "▾" : "▸") : ""}</span>
+          <Ico k={e.dir ? folderIcon(T, e.name, !!kids[e.path]) : fileIcon(T, e.name)} />
           <span className={"t" + (marks[e.path] ? " s" + marks[e.path] : "")}>{e.name}</span>
           {marks[e.path] && <span className={"st s" + marks[e.path]}>{marks[e.path]}</span>}
         </button>
@@ -260,6 +273,7 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
       <div key={kind + i.path} className={"scm-row" + (on ? " on" : "")} style={{ paddingLeft: 7 + depth * 12 }}
            title={`${i.path} · ${STATUS_NAME[i.status] ?? i.status}`}
            onClick={() => fromScm(i, kind === "staged")}>
+        <Ico k={fileIcon(T, i.path.slice(slash + 1))} />
         <span className={"t s" + i.status + (i.status === "D" ? " gone" : "")}>{i.path.slice(slash + 1)}</span>
         {!asTree && slash > 0 && <span className="dir">{i.path.slice(0, slash)}</span>}
         <span className="sp" />
@@ -275,6 +289,7 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
       return [
         <div key={key} className="scm-row folder" style={{ paddingLeft: 7 + depth * 12 }} onClick={() => fold(key)}>
           <span className="tw">{shut.has(key) ? "▸" : "▾"}</span>
+          <Ico k={folderIcon(T, d.name.split("/").pop() ?? d.name, !shut.has(key))} />
           <span className="t">{d.name}</span>
           <span className="sp" />
           {acts(allFiles(d), kind)}
@@ -367,6 +382,7 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
           {open && (
             <>
               <div className="ed-head">
+                <Ico k={fileIcon(T, base(open.abs || open.rel || ""))} />
                 <b title={open.abs || open.rel}>{base(open.abs || open.rel || "")}{dirty ? " ●" : ""}</b>
                 {open.rel && <span className="path">{open.staged ? "staged" : "working tree"}</span>}
                 <span className="sp" />
@@ -415,8 +431,7 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
               )}
               {mode !== "diff" && readErr && <div className="hint">{readErr}</div>}
               {mode === "edit" && canEdit && (
-                <textarea className="ed" spellCheck={false} value={text} onKeyDown={onKey}
-                          onChange={(e) => setText(e.target.value)} />
+                <CodeEditor key={open.abs} file={open.abs} value={text} original={orig} onChange={setText} onSave={save} />
               )}
               {/* Links would navigate the whole app away from itself. */}
               {mode === "preview" && canEdit && (

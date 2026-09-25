@@ -660,6 +660,12 @@ async fn scm_commit(root: String, message: String, all: bool, runtime: Option<St
 }
 
 #[tauri::command]
+async fn scm_original(root: String, file: String, runtime: Option<String>) -> Result<Option<String>, String> {
+    let r = rt(runtime);
+    blocking(move || explorer::original(&r, &root, &file)).await
+}
+
+#[tauri::command]
 async fn scm_discard(
     root: String, tracked: Vec<String>, untracked: Vec<String>, runtime: Option<String>,
 ) -> Result<(), String> {
@@ -790,6 +796,7 @@ pub fn run() {
             scm_stage,
             scm_commit,
             scm_discard,
+            scm_original,
             scm_sync,
             claude_projects,
             default_runtime,

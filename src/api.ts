@@ -161,6 +161,8 @@ export const api = {
     invoke<void>("scm_stage", { root, files, on, runtime }),
   scmCommit: (root: string, message: string, all: boolean, runtime?: string) =>
     invoke<void>("scm_commit", { root, message, all, runtime }),
+  scmOriginal: (root: string, file: string, runtime?: string) =>
+    invoke<string | null>("scm_original", { root, file, runtime }),
   scmDiscard: (root: string, tracked: string[], untracked: string[], runtime?: string) =>
     invoke<void>("scm_discard", { root, tracked, untracked, runtime }),
   scmSync: (root: string, op: "push" | "publish" | "pull" | "fetch", runtime?: string) =>

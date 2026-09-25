@@ -802,3 +802,15 @@ table.plain td.mono { font-family: var(--mono); }
 .explorer .scm-row .sM { color: var(--warn); }
 .explorer .scm-row .sA, .explorer .scm-row .sU, .explorer .scm-row .sR { color: var(--ok); }
 .explorer .scm-row .sD, .explorer .scm-row .s\! { color: var(--danger); }
+/* Material Icon Theme icons: 16px like VS Code's explorer. */
+.fi { flex: none; width: 16px; height: 16px; }
+.explorer .frow { gap: 5px; }
+/* CodeMirror editor: fills the pane; change bars like VS Code's gutter. */
+.code-ed { flex: 1; min-height: 0; overflow: hidden; }
+.code-ed .cm-editor { height: 100%; font-size: 13px; }
+.code-ed .cm-scroller { font-family: var(--mono); line-height: 1.55; }
+.code-ed .cm-chg-gutter { width: 4px; }
+.code-ed .cm-chg { width: 3px; height: 100%; margin-left: 1px; }
+.code-ed .cm-chg.add { background: #2ea043; }
+.code-ed .cm-chg.mod { background: #0078d4; }
+.code-ed .cm-chg.del { height: 0; margin-top: -4px; border: 4px solid transparent; border-left-color: #f85149; width: 0; }

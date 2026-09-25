@@ -3,3 +3,5 @@ dist
 src-tauri/target
 src-tauri/gen/schemas
 landing
+public/material
+src/icons.gen.json
