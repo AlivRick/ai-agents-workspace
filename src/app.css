@@ -727,9 +727,27 @@ table.plain td.mono { font-family: var(--mono); }
   color: var(--faint); cursor: pointer; font-size: 14px; line-height: 1;
 }
 .explorer .mini:hover { background: var(--hover); color: var(--text); }
-.explorer .scm-row { display: flex; align-items: center; }
-.explorer .scm-row .mini { visibility: hidden; }
-.explorer .scm-row:hover .mini { visibility: visible; }
+/* Source Control rows, VS Code-shaped: name, dim folder, hover actions, letter. */
+.explorer .scm-row {
+  display: flex; align-items: center; gap: 6px; min-height: 24px; padding: 0 6px 0 7px;
+  border-radius: 5px; font-size: 12.5px; cursor: pointer; white-space: nowrap;
+}
+.explorer .scm-row:hover { background: var(--hover); }
+.explorer .scm-row.on { background: var(--raise); }
+.explorer .scm-row .t { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.explorer .scm-row .t.gone { text-decoration: line-through; opacity: .75; }
+.explorer .scm-row .dir { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--faint); font-size: 11.5px; }
+.explorer .scm-row .sp { flex: 1; }
+.explorer .scm-row .tw, .explorer .sec .tw { flex: none; width: 10px; color: var(--faint); font-size: 10px; }
+.explorer .scm-row.folder .t { color: var(--dim); }
+.explorer .acts { display: none; gap: 1px; }
+.explorer .scm-row:hover .acts, .explorer .scm-row.on .acts, .explorer .sec:hover .acts { display: flex; }
+.explorer .sec.click { cursor: pointer; }
+.explorer .sec.click:hover { color: var(--dim); }
+.explorer .sec .mini { font-size: 13px; }
+.explorer .st.s\! { color: var(--danger); }
+.explorer .st.sD, .explorer .t.sD { color: var(--danger); }
+.explorer .st.sR { color: var(--ok); }
 .explorer .frow .tw { flex: none; width: 10px; color: var(--faint); font-size: 10px; }
 .explorer .frow .t { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .explorer .frow .t.sM { color: var(--warn); }
@@ -778,3 +796,9 @@ table.plain td.mono { font-family: var(--mono); }
 .dock-head .btn { padding: 2px 9px; font-size: 15px; line-height: 1; }
 .dock-rs { position: absolute; left: -3px; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 5; }
 .dock-rs:hover { background: var(--accent); opacity: .5; }
+.explorer .scm-row .st {
+  flex: none; width: 14px; text-align: center; font-family: var(--mono); font-size: 10px; font-weight: 700; color: var(--faint);
+}
+.explorer .scm-row .sM { color: var(--warn); }
+.explorer .scm-row .sA, .explorer .scm-row .sU, .explorer .scm-row .sR { color: var(--ok); }
+.explorer .scm-row .sD, .explorer .scm-row .s\! { color: var(--danger); }

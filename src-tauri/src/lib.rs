@@ -654,9 +654,31 @@ async fn scm_stage(root: String, files: Vec<String>, on: bool, runtime: Option<S
 }
 
 #[tauri::command]
-async fn scm_commit(root: String, message: String, runtime: Option<String>) -> Result<(), String> {
+async fn scm_commit(root: String, message: String, all: bool, runtime: Option<String>) -> Result<(), String> {
     let r = rt(runtime);
-    blocking(move || explorer::commit(&r, &root, &message)).await?
+    blocking(move || explorer::commit(&r, &root, &message, all)).await?
+}
+
+#[tauri::command]
+async fn scm_discard(
+    root: String, tracked: Vec<String>, untracked: Vec<String>, runtime: Option<String>,
+) -> Result<(), String> {
+    let r = rt(runtime);
+    blocking(move || explorer::discard(&r, &root, &tracked, &untracked)).await?
+}
+
+/// `op`: "push", "publish", "pull" or "fetch".
+#[tauri::command]
+async fn scm_sync(root: String, op: String, runtime: Option<String>) -> Result<(), String> {
+    let r = rt(runtime);
+    blocking(move || match op.as_str() {
+        "push" => explorer::push(&r, &root, true),
+        "publish" => explorer::push(&r, &root, false),
+        "pull" => explorer::pull(&r, &root),
+        "fetch" => explorer::fetch(&r, &root),
+        _ => Err(format!("unknown op {op}")),
+    })
+    .await?
 }
 
 // ---------------------------------------------------------------- terminals
@@ -767,6 +789,8 @@ pub fn run() {
             scm_diff,
             scm_stage,
             scm_commit,
+            scm_discard,
+            scm_sync,
             claude_projects,
             default_runtime,
             set_runtime,

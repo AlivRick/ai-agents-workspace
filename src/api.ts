@@ -77,7 +77,10 @@ export type Entry = { name: string; path: string; dir: boolean };
 /** One file in Source Control. `path` is repo-relative (what git takes),
  *  `abs` is where to open it, empty when it sits outside the workspace. */
 export type ScmItem = { path: string; abs: string; status: string };
-export type ScmStatus = { isRepo: boolean; branch: string; staged: ScmItem[]; changes: ScmItem[] };
+export type ScmStatus = {
+  isRepo: boolean; branch: string; upstream: boolean; ahead: number; behind: number;
+  merge: ScmItem[]; staged: ScmItem[]; changes: ScmItem[];
+};
 
 export type Runtime = { id: string; label: string; kind: string; distro: string; shell: string };
 
@@ -156,8 +159,12 @@ export const api = {
     invoke<string>("scm_diff", { root, file, staged, runtime }),
   scmStage: (root: string, files: string[], on: boolean, runtime?: string) =>
     invoke<void>("scm_stage", { root, files, on, runtime }),
-  scmCommit: (root: string, message: string, runtime?: string) =>
-    invoke<void>("scm_commit", { root, message, runtime }),
+  scmCommit: (root: string, message: string, all: boolean, runtime?: string) =>
+    invoke<void>("scm_commit", { root, message, all, runtime }),
+  scmDiscard: (root: string, tracked: string[], untracked: string[], runtime?: string) =>
+    invoke<void>("scm_discard", { root, tracked, untracked, runtime }),
+  scmSync: (root: string, op: "push" | "publish" | "pull" | "fetch", runtime?: string) =>
+    invoke<void>("scm_sync", { root, op, runtime }),
   hookEvents: () => invoke<HookEvent[]>("hook_events"),
   /** False when the platform cannot show a clickable toast — fall back to the plugin. */
   toast: (title: string, body: string, pane: string) => invoke<boolean>("toast", { title, body, pane }),

@@ -1,12 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Marked } from "marked";
 import { api, shortPath, type Entry, type ScmItem, type ScmStatus } from "./api";
+import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import { parseDiff, sideBySide, type Row } from "./diff";
+import { allFiles, buildTree, type Folder } from "./scmtree";
 
 /** A file on screen. `rel` is set when git knows it changed — that is what
  *  makes the Diff tab available. */
 type Open = { abs: string; rel?: string; staged?: boolean; status?: string };
 type Mode = "edit" | "diff" | "preview";
+type Group = "merge" | "staged" | "changes";
+const STATUS_NAME: Record<string, string> = {
+  M: "Modified", A: "Added", D: "Deleted", R: "Renamed", C: "Copied", U: "Untracked", T: "Type changed", "!": "Conflict",
+};
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 /** Raw HTML inside a README is shown as text, never rendered: the page has
@@ -53,6 +59,10 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
    *  file means "discard them". */
   const [pending, setPending] = useState("");
   const [tick, setTick] = useState(0);
+  /** Source Control as a folder tree or a flat list, like VS Code's toggle. */
+  const [asTree, setAsTree] = useState(() => { try { return localStorage.getItem("scmTree") === "1"; } catch { return false; } });
+  /** Collapsed groups and folders. */
+  const [shut, setShut] = useState<Set<string>>(new Set());
   /** Old | new columns, or git's single column. Remembered across launches. */
   const [split, setSplit] = useState(() => { try { return localStorage.getItem("diffSplit") !== "0"; } catch { return true; } });
   const pickSplit = (v: boolean) => { setSplit(v); try { localStorage.setItem("diffSplit", v ? "1" : "0"); } catch { /* private mode */ } };
@@ -141,7 +151,7 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
   /** Status letter per on-disk path, so the tree can mark changed files. */
   const marks = useMemo(() => {
     const m: Record<string, string> = {};
-    for (const i of [...(scm?.staged ?? []), ...(scm?.changes ?? [])]) if (i.abs) m[i.abs] = i.status;
+    for (const i of [...(scm?.staged ?? []), ...(scm?.changes ?? []), ...(scm?.merge ?? [])]) if (i.abs) m[i.abs] = i.status;
     return m;
   }, [scm]);
 
@@ -158,7 +168,10 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
   };
   const fromScm = (i: ScmItem, staged: boolean) =>
     go({ abs: i.abs, rel: i.path, staged, status: i.status },
-       i.status === "U" ? (isMd(i.path) ? "preview" : "edit") : "diff");
+       // A conflict opens as text: the <<<<<<< markers are what you edit.
+       i.status === "U" || i.status === "!" ? (isMd(i.path) && i.status === "U" ? "preview" : "edit") : "diff");
+  const openFile = (i: ScmItem, staged: boolean) =>
+    go({ abs: i.abs, rel: i.path, staged, status: i.status }, isMd(i.path) ? "preview" : "edit");
   const fromTree = (e: Entry) => {
     const i = scm?.changes.find((c) => c.abs === e.path) ?? scm?.staged.find((c) => c.abs === e.path);
     go({ abs: e.path, rel: i?.path, staged: !!i && !scm?.changes.includes(i), status: i?.status },
@@ -175,8 +188,25 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
     try { await f(); setTick((n) => n + 1); } catch (e) { setError(String(e)); } finally { setBusy(false); }
   }, []);
   const save = () => open && dirty && run(async () => { await api.fsWrite(root, open.abs, text); setSaved(text); });
-  const stage = (files: ScmItem[], on: boolean) => files.length && run(() => api.scmStage(root, files.map((f) => f.path), on, runtime));
-  const commit = () => run(async () => { await api.scmCommit(root, msg, runtime); setMsg(""); });
+  const stage = (files: ScmItem[], on: boolean) =>
+    files.length && run(() => api.scmStage(root, files.map((f) => f.path), on, runtime));
+  /** Irreversible, so it asks — the one native dialog in this view, the same
+   *  wording VS Code uses. */
+  const discard = async (files: ScmItem[]) => {
+    if (!files.length) return;
+    const what = files.length === 1 ? `the changes in ${base(files[0].path)}` : `${files.length} files`;
+    const ok = await confirmDialog(`Discard ${what}?\n\nThis is IRREVERSIBLE — the working-tree changes are lost, and new (untracked) files are deleted.`,
+      { title: "Discard changes", kind: "warning", okLabel: "Discard", cancelLabel: "Cancel" });
+    if (!ok) return;
+    const untracked = files.filter((f) => f.status === "U").map((f) => f.path);
+    const tracked = files.filter((f) => f.status !== "U").map((f) => f.path);
+    run(() => api.scmDiscard(root, tracked, untracked, runtime));
+  };
+  const sync = (op: "push" | "publish" | "pull" | "fetch") => run(() => api.scmSync(root, op, runtime));
+  const nothingStaged = !scm?.staged.length;
+  const canCommit = !!scm && !!msg.trim() && !scm.merge.length && (scm.staged.length > 0 || scm.changes.length > 0);
+  /** Nothing staged means "commit everything", VS Code's smart commit. */
+  const commit = () => canCommit && run(async () => { await api.scmCommit(root, msg, nothingStaged, runtime); setMsg(""); });
 
   const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); save(); }
@@ -200,28 +230,75 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
       </div>
     ));
 
-  const group = (title: string, items: ScmItem[], staged: boolean) => (
-    <>
-      <div className="sec">
-        <span>{title}</span><b>{items.length}</b><span className="sp" />
-        {items.length > 0 && (
-          <button className="mini" disabled={busy} onClick={() => stage(items, !staged)}
-                  title={staged ? "Unstage all" : "Stage all"}>{staged ? "−" : "+"}</button>
-        )}
-      </div>
-      {items.map((i) => (
-        <div key={i.path} className="scm-row">
-          <button className={"frow" + (open?.rel === i.path && !!open.staged === staged ? " on" : "")}
-                  onClick={() => fromScm(i, staged)} title={i.path}>
-            <span className="n">{i.path}</span>
-            <span className={"st s" + i.status}>{i.status}</span>
-          </button>
-          <button className="mini" disabled={busy} onClick={() => stage([i], !staged)}
-                  title={staged ? "Unstage" : "Stage"}>{staged ? "−" : "+"}</button>
-        </div>
-      ))}
-    </>
+  const fold = (key: string) => setShut((c) => { const n = new Set(c); if (n.has(key)) n.delete(key); else n.add(key); return n; });
+  const pickTree = (v: boolean) => { setAsTree(v); try { localStorage.setItem("scmTree", v ? "1" : "0"); } catch { /* ok */ } };
+
+  /** The hover buttons VS Code puts on a row, for one file or a whole folder. */
+  const acts = (items: ScmItem[], kind: Group, one?: ScmItem) => (
+    <span className="acts" onClick={(e) => e.stopPropagation()}>
+      {one?.abs && one.status !== "D" && (
+        <button className="mini" title="Open File" onClick={() => openFile(one, kind === "staged")}>↗</button>
+      )}
+      {kind === "changes" && (
+        <button className="mini" disabled={busy} title={one ? "Discard Changes" : "Discard All Changes"}
+                onClick={() => void discard(items)}>↶</button>
+      )}
+      {kind === "staged" ? (
+        <button className="mini" disabled={busy} title={one ? "Unstage Changes" : "Unstage All Changes"}
+                onClick={() => stage(items, false)}>−</button>
+      ) : (
+        <button className="mini" disabled={busy} title={kind === "merge" ? "Stage (mark resolved)" : one ? "Stage Changes" : "Stage All Changes"}
+                onClick={() => stage(items, true)}>+</button>
+      )}
+    </span>
   );
+
+  const fileRow = (i: ScmItem, kind: Group, depth: number) => {
+    const slash = i.path.lastIndexOf("/");
+    const on = open?.rel === i.path && !!open.staged === (kind === "staged");
+    return (
+      <div key={kind + i.path} className={"scm-row" + (on ? " on" : "")} style={{ paddingLeft: 7 + depth * 12 }}
+           title={`${i.path} · ${STATUS_NAME[i.status] ?? i.status}`}
+           onClick={() => fromScm(i, kind === "staged")}>
+        <span className={"t s" + i.status + (i.status === "D" ? " gone" : "")}>{i.path.slice(slash + 1)}</span>
+        {!asTree && slash > 0 && <span className="dir">{i.path.slice(0, slash)}</span>}
+        <span className="sp" />
+        {acts([i], kind, i)}
+        <span className={"st s" + i.status}>{i.status}</span>
+      </div>
+    );
+  };
+
+  const folderRows = (f: Folder<ScmItem>, kind: Group, depth: number): React.ReactNode[] => [
+    ...f.dirs.flatMap((d) => {
+      const key = `${kind}:${d.path}`;
+      return [
+        <div key={key} className="scm-row folder" style={{ paddingLeft: 7 + depth * 12 }} onClick={() => fold(key)}>
+          <span className="tw">{shut.has(key) ? "▸" : "▾"}</span>
+          <span className="t">{d.name}</span>
+          <span className="sp" />
+          {acts(allFiles(d), kind)}
+        </div>,
+        ...(shut.has(key) ? [] : folderRows(d, kind, depth + 1)),
+      ];
+    }),
+    ...f.files.map((i) => fileRow(i, kind, depth)),
+  ];
+
+  const group = (title: string, items: ScmItem[], kind: Group) => {
+    if (!items.length && kind !== "changes") return null;
+    const key = "group:" + kind;
+    return (
+      <>
+        <div className="sec click" onClick={() => fold(key)}>
+          <span className="tw">{shut.has(key) ? "▸" : "▾"}</span>
+          <span>{title}</span><b>{items.length}</b><span className="sp" />
+          {items.length > 0 && acts(items, kind)}
+        </div>
+        {!shut.has(key) && (asTree ? folderRows(buildTree(items), kind, 1) : items.map((i) => fileRow(i, kind, 1)))}
+      </>
+    );
+  };
 
   if (!root) return <div className="view" style={{ display: "flex" }}><div className="hint">Pick a workspace in the sidebar first.</div></div>;
 
@@ -248,16 +325,37 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
         <div className="files">
           {scm?.isRepo && (
             <>
-              <div className="commit">
-                <textarea placeholder={`Message (Ctrl+Enter to commit on ${scm.branch})`} value={msg} rows={2}
-                          onChange={(e) => setMsg(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && scm.staged.length) commit(); }} />
-                <button className="btn primary" disabled={busy || !scm.staged.length || !msg.trim()} onClick={commit}>
-                  ✓ Commit{scm.staged.length ? ` (${scm.staged.length})` : ""}
+              <div className="sec">
+                <span>Source Control</span><span className="sp" />
+                <button className="mini" title={asTree ? "View as List" : "View as Tree"} onClick={() => pickTree(!asTree)}>
+                  {asTree ? "☰" : "🌲"}
                 </button>
+                <button className="mini" disabled={busy} title="Pull (fetch + fast-forward)" onClick={() => sync("pull")}>↓</button>
+                <button className="mini" disabled={busy} title={scm.upstream ? "Push" : "Publish Branch"}
+                        onClick={() => sync(scm.upstream ? "push" : "publish")}>↑</button>
+                <button className="mini" disabled={busy} title="Fetch" onClick={() => sync("fetch")}>⟳</button>
               </div>
-              {group("Staged Changes", scm.staged, true)}
-              {group("Changes", scm.changes, false)}
+              <div className="commit">
+                <textarea placeholder={`Message (Ctrl+Enter to commit on "${scm.branch}")`} value={msg} rows={2}
+                          onChange={(e) => setMsg(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); commit(); } }} />
+                <button className="btn primary" disabled={busy || !canCommit} onClick={commit}
+                        title={scm.merge.length ? "Resolve the merge conflicts first" : nothingStaged ? "Nothing staged: stage every change and commit it" : ""}>
+                  ✓ {nothingStaged && scm.changes.length ? "Commit All" : "Commit"}
+                </button>
+                {/* VS Code's Sync button: only there when there is something to sync. */}
+                {(scm.ahead > 0 || scm.behind > 0 || !scm.upstream) && (
+                  <button className="btn ghost" disabled={busy}
+                          onClick={() => (!scm.upstream ? sync("publish") : scm.behind > 0 ? sync("pull") : sync("push"))}>
+                    {!scm.upstream ? "↑ Publish Branch"
+                      : scm.behind > 0 ? `↓ Pull ${scm.behind}${scm.ahead ? ` · ↑ ${scm.ahead}` : ""}`
+                      : `↑ Push ${scm.ahead} commit${scm.ahead === 1 ? "" : "s"}`}
+                  </button>
+                )}
+              </div>
+              {group("Merge Changes", scm.merge, "merge")}
+              {group("Staged Changes", scm.staged, "staged")}
+              {group("Changes", scm.changes, "changes")}
             </>
           )}
           <div className="sec"><span>Explorer</span></div>
