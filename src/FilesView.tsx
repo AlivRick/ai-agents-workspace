@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Marked } from "marked";
 import { api, shortPath, type Entry, type ScmItem, type ScmStatus } from "./api";
 import { parseDiff, sideBySide, type Row } from "./diff";
@@ -64,8 +64,49 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
     if (root) api.fsList(root, root).then((e) => setKids({ [root]: e })).catch((e) => setError(String(e)));
   }, [root]);
 
-  // ponytail: re-read on window focus and after every action, not on a timer —
-  // an agent writing files while you watch needs the ⟳ button.
+  // VS Code watches files and re-runs `git status` on change. A Windows app
+  // reading a distro over \\wsl.localhost gets no reliable change events, so
+  // this polls instead: every 2s while the Explorer is on screen, never two
+  // rounds at once, and only touching state that actually changed.
+  // ponytail: the ceiling is ~3 short git processes per 2s; the upgrade path is
+  // an inotify watcher run inside the distro, the way VS Code's WSL server does.
+  const live = useRef({ dirty, open, saved, kids });
+  live.current = { dirty, open, saved, kids };
+  useEffect(() => {
+    if (!root) return;
+    let stop = false;
+    let timer = 0;
+    const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+    const round = async () => {
+      if (!document.hidden) {
+        try {
+          const s = await api.scmStatus(root, runtime);
+          if (stop) return;
+          setScm((p) => (same(p, s) ? p : s));
+          const o = live.current.open;
+          if (o?.rel && o.status !== "U") {
+            const d = await api.scmDiff(root, o.rel, !!o.staged, runtime).catch((e) => String(e));
+            if (!stop && live.current.open === o) setDiff(d);
+          }
+          // An agent rewrote the file you are looking at: show its version,
+          // unless you have edits of your own in the box.
+          if (o?.abs && o.status !== "D" && !live.current.dirty) {
+            const t = await api.fsRead(root, o.abs).catch(() => null);
+            const c = live.current;
+            if (!stop && t !== null && c.open === o && !c.dirty && t !== c.saved) { setText(t); setSaved(t); }
+          }
+          for (const dir of Object.keys(live.current.kids)) {
+            const e = await api.fsList(root, dir).catch(() => null);
+            if (!stop && e) setKids((k) => (k[dir] && !same(k[dir], e) ? { ...k, [dir]: e } : k));
+          }
+        } catch { /* the next round will try again */ }
+      }
+      if (!stop) timer = window.setTimeout(round, 2000);
+    };
+    timer = window.setTimeout(round, 2000);
+    return () => { stop = true; clearTimeout(timer); };
+  }, [root, runtime]);
+
   useEffect(() => {
     if (!root) return;
     let live = true;
