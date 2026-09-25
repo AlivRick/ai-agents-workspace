@@ -1,5 +1,6 @@
 mod codex;
 mod engine;
+mod explorer;
 mod notify;
 mod sessions;
 mod store;
@@ -617,6 +618,47 @@ async fn delete_doc(
     blocking(move || ws::delete(&path, &workspace, &dir, with_dir)).await?
 }
 
+// ------------------------------------------------------------------ explorer
+
+#[tauri::command]
+async fn fs_list(root: String, dir: String) -> Result<Vec<explorer::Entry>, String> {
+    blocking(move || explorer::list(&root, &dir)).await?
+}
+
+#[tauri::command]
+async fn fs_read(root: String, path: String) -> Result<String, String> {
+    blocking(move || explorer::read(&root, &path)).await?
+}
+
+#[tauri::command]
+async fn fs_write(root: String, path: String, content: String) -> Result<(), String> {
+    blocking(move || explorer::write(&root, &path, &content)).await?
+}
+
+#[tauri::command]
+async fn scm_status(root: String, runtime: Option<String>) -> Result<explorer::Status, String> {
+    let r = rt(runtime);
+    blocking(move || explorer::status(&r, &root)).await?
+}
+
+#[tauri::command]
+async fn scm_diff(root: String, file: String, staged: bool, runtime: Option<String>) -> Result<String, String> {
+    let r = rt(runtime);
+    blocking(move || explorer::diff(&r, &root, &file, staged)).await?
+}
+
+#[tauri::command]
+async fn scm_stage(root: String, files: Vec<String>, on: bool, runtime: Option<String>) -> Result<(), String> {
+    let r = rt(runtime);
+    blocking(move || explorer::stage(&r, &root, &files, on)).await?
+}
+
+#[tauri::command]
+async fn scm_commit(root: String, message: String, runtime: Option<String>) -> Result<(), String> {
+    let r = rt(runtime);
+    blocking(move || explorer::commit(&r, &root, &message)).await?
+}
+
 // ---------------------------------------------------------------- terminals
 
 #[tauri::command]
@@ -718,6 +760,13 @@ pub fn run() {
             worktree_diff,
             worktree_merge,
             worktree_remove,
+            fs_list,
+            fs_read,
+            fs_write,
+            scm_status,
+            scm_diff,
+            scm_stage,
+            scm_commit,
             claude_projects,
             default_runtime,
             set_runtime,

@@ -72,6 +72,13 @@ export type MemoryInfo = {
   isIndex: boolean; bytes: number; updatedAtMs: number;
 };
 
+/** One row of the Explorer tree. */
+export type Entry = { name: string; path: string; dir: boolean };
+/** One file in Source Control. `path` is repo-relative (what git takes),
+ *  `abs` is where to open it, empty when it sits outside the workspace. */
+export type ScmItem = { path: string; abs: string; status: string };
+export type ScmStatus = { isRepo: boolean; branch: string; staged: ScmItem[]; changes: ScmItem[] };
+
 export type Runtime = { id: string; label: string; kind: string; distro: string; shell: string };
 
 export const api = {
@@ -141,6 +148,16 @@ export const api = {
     invoke<string>("worktree_merge", { tree, message, runtime }),
   worktreeRemove: (tree: Tree, deleteBranch: boolean, runtime?: string) =>
     invoke<void>("worktree_remove", { tree, deleteBranch, runtime }),
+  fsList: (root: string, dir: string) => invoke<Entry[]>("fs_list", { root, dir }),
+  fsRead: (root: string, path: string) => invoke<string>("fs_read", { root, path }),
+  fsWrite: (root: string, path: string, content: string) => invoke<void>("fs_write", { root, path, content }),
+  scmStatus: (root: string, runtime?: string) => invoke<ScmStatus>("scm_status", { root, runtime }),
+  scmDiff: (root: string, file: string, staged: boolean, runtime?: string) =>
+    invoke<string>("scm_diff", { root, file, staged, runtime }),
+  scmStage: (root: string, files: string[], on: boolean, runtime?: string) =>
+    invoke<void>("scm_stage", { root, files, on, runtime }),
+  scmCommit: (root: string, message: string, runtime?: string) =>
+    invoke<void>("scm_commit", { root, message, runtime }),
   hookEvents: () => invoke<HookEvent[]>("hook_events"),
   /** False when the platform cannot show a clickable toast — fall back to the plugin. */
   toast: (title: string, body: string, pane: string) => invoke<boolean>("toast", { title, body, pane }),

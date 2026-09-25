@@ -712,3 +712,69 @@ table.plain td.mono { font-family: var(--mono); }
 .zoomer { display: flex; align-items: center; gap: 8px; }
 .zoomer b { min-width: 48px; text-align: center; font-variant-numeric: tabular-nums; }
 .zoomer .btn:disabled { opacity: .4; cursor: default; }
+
+/* Explorer: the review grid, full height, with an editor on the right. */
+.explorer { grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); }
+.explorer .files { padding: 6px 6px 16px; }
+.explorer .sec {
+  display: flex; align-items: center; gap: 6px; padding: 10px 7px 4px;
+  font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--faint);
+}
+.explorer .sec b { font-weight: 600; background: var(--raise); border-radius: 10px; padding: 0 6px; }
+.explorer .sec .sp { flex: 1; }
+.explorer .mini {
+  flex: none; width: 20px; height: 20px; border: 0; border-radius: 4px; background: none;
+  color: var(--faint); cursor: pointer; font-size: 14px; line-height: 1;
+}
+.explorer .mini:hover { background: var(--hover); color: var(--text); }
+.explorer .scm-row { display: flex; align-items: center; }
+.explorer .scm-row .mini { visibility: hidden; }
+.explorer .scm-row:hover .mini { visibility: visible; }
+.explorer .frow .tw { flex: none; width: 10px; color: var(--faint); font-size: 10px; }
+.explorer .frow .t { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.explorer .frow .t.sM { color: var(--warn); }
+.explorer .frow .t.sA, .explorer .frow .t.sU { color: var(--ok); }
+.explorer .frow .sM { color: var(--warn); }
+.explorer .frow .sU { color: var(--ok); }
+.explorer .commit { display: flex; flex-direction: column; gap: 6px; padding: 4px 4px 2px; }
+.explorer .commit textarea {
+  resize: vertical; background: var(--bg); color: var(--text); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 8px; font: inherit; font-size: 12px; outline: none;
+}
+.explorer .commit textarea:focus { border-color: var(--accent); }
+.explorer .pane-ed { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.explorer .pane-ed .diff { flex: 1; }
+.explorer .ed-head .path { color: var(--faint); font-size: 11px; }
+.md { flex: 1; overflow: auto; padding: 18px 28px 40px; line-height: 1.65; font-size: 13.5px; max-width: 900px; }
+.md h1, .md h2 { border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+.md a { color: var(--accent); }
+.md code { font-family: var(--mono); font-size: 12px; background: var(--raise); border-radius: 4px; padding: 1px 5px; }
+.md pre { background: var(--raise); border: 1px solid var(--line-soft); border-radius: 6px; padding: 10px 12px; overflow: auto; }
+.md pre code { background: none; padding: 0; }
+.md blockquote { margin: 0; padding-left: 12px; border-left: 3px solid var(--line); color: var(--dim); }
+.md table { border-collapse: collapse; }
+.md th, .md td { border: 1px solid var(--line); padding: 4px 10px; }
+.md img { max-width: 100%; }
+/* Old | New (class .sbs — .split is taken by the config view's grid): four columns — line number and text for each side. Lines wrap
+   rather than scroll, so the two sides can never drift out of step. */
+.review .diff.sbs .sl { display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px minmax(0, 1fr); }
+.review .diff.sbs .sl .tx { white-space: pre-wrap; word-break: break-all; padding: 0 10px 0 4px; }
+.review .diff.sbs .sl .tx:nth-child(2) { border-right: 1px solid var(--line); }
+.review .diff.sbs .sl .tx.del { background: var(--err-bg); color: var(--err-fg); }
+.review .diff.sbs .sl .tx.add { background: var(--done-bg); color: var(--done-fg); }
+.review .diff.sbs .sl .tx.none { background: repeating-linear-gradient(135deg, transparent 0 5px, var(--line-soft) 5px 6px); }
+.review .diff.sbs .sl.head {
+  position: sticky; top: 0; z-index: 1; grid-template-columns: 1fr 1fr; background: var(--panel);
+  border-bottom: 1px solid var(--line); font-family: inherit; font-size: 11px; color: var(--faint);
+}
+.review .diff.sbs .sl.head span { padding: 5px 12px; }
+.review .diff.sbs .sl.head span:first-child { border-right: 1px solid var(--line); }
+.review .diff.sbs .sl .ln { text-align: right; padding-right: 8px; color: var(--faint); user-select: none; font-size: 11px; }
+
+/* Terminal dạt sang phải khi Explorer mở. */
+.main > .view.dock { flex: none; min-width: 0; order: 2; border-left: 1px solid var(--line); position: relative; }
+.main > .view:not(.dock) { min-width: 0; }
+.dock-head { gap: 4px; }
+.dock-head .btn { padding: 2px 9px; font-size: 15px; line-height: 1; }
+.dock-rs { position: absolute; left: -3px; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 5; }
+.dock-rs:hover { background: var(--accent); opacity: .5; }

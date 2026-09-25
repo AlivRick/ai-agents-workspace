@@ -51,3 +51,36 @@ export function parseDiff(text: string): Row[] {
 /** "+12 −3" for a file row, or "binary" when there is nothing to count. */
 export const stat = (added: number, removed: number, binary: boolean) =>
   binary ? "binary" : `+${added} −${removed}`;
+
+/** One line of a side-by-side diff: old on the left, new on the right, either
+ *  side blank where it has no line. A hunk header spans both. */
+export type Pair = { hunk: string } | { l: Row | null; r: Row | null };
+
+/**
+ * Unified rows → old | new columns, the way VS Code's diff editor shows them.
+ * A run of deletions followed by a run of additions is one edit, so the two
+ * runs are zipped line by line; the shorter side pads with blanks.
+ */
+export function sideBySide(rows: Row[]): Pair[] {
+  const out: Pair[] = [];
+  let dels: Row[] = [];
+  let adds: Row[] = [];
+  const flush = () => {
+    for (let i = 0; i < Math.max(dels.length, adds.length); i++) out.push({ l: dels[i] ?? null, r: adds[i] ?? null });
+    dels = [];
+    adds = [];
+  };
+  for (const r of rows) {
+    if (r.kind === "del") {
+      if (adds.length) flush(); // a deletion after additions starts a new edit
+      dels.push(r);
+    } else if (r.kind === "add") adds.push(r);
+    else {
+      flush();
+      if (r.kind === "hunk") out.push({ hunk: r.text });
+      else if (r.kind === "ctx") out.push({ l: r, r });
+    }
+  }
+  flush();
+  return out;
+}

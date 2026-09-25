@@ -10,6 +10,7 @@ import SettingsView from "./SettingsView";
 import UsageView from "./UsageView";
 import WorkspaceView, { TABS as WS_TABS, type Tab as WsTab } from "./WorkspaceView";
 import TaskSheet, { AgentIcon, type TaskSpec } from "./TaskSheet";
+import FilesView from "./FilesView";
 import DiffSheet from "./DiffSheet";
 import { AGENTS, agentOf, allBins, launchArgs, launchCommand, type Slot } from "./agents";
 import { applyTheme, themeById } from "./themes";
@@ -22,7 +23,7 @@ import {
   type Block, type EngineStatus, type GitInfo, type Runtime, type Tree, type Workspace,
 } from "./api";
 
-type View = "code" | "workspace" | "usage" | "settings";
+type View = "code" | "files" | "workspace" | "usage" | "settings";
 /** One entry of the todo list Claude keeps for itself, as TodoWrite writes it. */
 type Todo = { content: string; activeForm?: string; status: string };
 /** A unit of work inside a workspace: a name, the terminals doing it, and the
@@ -57,12 +58,13 @@ const Icon = ({ d }: { d: string }) => (
 );
 const I: Record<View, string> = {
   code: "M8 9l3 3-3 3M13 15h3M4 4h16v16H4z",
+  files: "M14 3H6a2 2 0 00-2 2v14a2 2 0 002 2h12a2 2 0 002-2V9zM14 3v6h6M9 13h6M9 17h4",
   workspace: "M4 19V6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2zM8 12h8M8 16h5",
   usage: "M4 20V10M10 20V4M16 20v-7M22 20H2",
   settings: "M12 15a3 3 0 100-6 3 3 0 000 6zM19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-2.9 1.2V21a2 2 0 11-4 0v-.1A1.7 1.7 0 007.1 19.7l-.1.1a2 2 0 11-2.8-2.8l.1-.1A1.7 1.7 0 003.1 14H3a2 2 0 110-4h.1A1.7 1.7 0 004.3 7.1l-.1-.1a2 2 0 112.8-2.8l.1.1A1.7 1.7 0 0010 3.1V3a2 2 0 114 0v.1a1.7 1.7 0 002.9 1.2l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 001.2 2.9H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z",
 };
 const VIEW_NAME: Record<View, string> = {
-  code: "Terminals", workspace: "Claude config", usage: "Usage", settings: "Settings",
+  code: "Terminals", files: "Explorer", workspace: "Claude config", usage: "Usage", settings: "Settings",
 };
 const STATUS: Record<Status, [string, string]> = {
   idle: ["", "ready"], run: ["run", "working"], att: ["att", "waiting for you"], done: ["done", "done"],
@@ -119,6 +121,9 @@ export default function App() {
   const [showBlocks, setShowBlocks] = useState<string | null>(null);
   const [showTodos, setShowTodos] = useState<string | null>(null);
   const [zoom, setZoom] = useState<string | null>(null);
+  const [dockOn, setDockOn] = useState(() => { try { return localStorage.getItem("dock") !== "0"; } catch { return true; } });
+  const [dockW, setDockW] = useState(() => { try { return Number(localStorage.getItem("dockW")) || 520; } catch { return 520; } });
+  const [dockId, setDockId] = useState<string | null>(null);
   /** Column and row weights per task, so a terminal you widened stays wide.
    *  Keyed by task; a task whose terminal count changed falls back to equal. */
   const [sizes, setSizes] = useState<Record<string, { cols: number[]; rows: number[] }>>({});
@@ -721,6 +726,39 @@ export default function App() {
   /** Chỉ terminal của tác vụ đang mở mới hiện; các pane khác vẫn nằm trong DOM
    *  (ẩn đi) vì unmount là giết PTY. */
   const shown = panes.filter((p) => p.taskId === taskId);
+  /** Explorer đang mở thì terminal của tác vụ hiện tại dạt sang cột phải, mỗi
+   *  lúc một cái, ‹ › để chuyển. Vẫn là đúng lưới đó, chỉ thu hẹp lại và "zoom"
+   *  vào một pane — tháo nó ra là chạy cleanup của Pane và giết PTY. */
+  const docked = view === "files" && dockOn && shown.length > 0;
+  const dockAt = Math.max(0, shown.findIndex((p) => p.id === dockId));
+  const dockPane = docked ? shown[dockAt] : null;
+  const solo = dockPane ? dockPane.id : zoom;
+  const stepDock = (d: number) => {
+    const next = shown[(dockAt + d + shown.length) % shown.length];
+    setDockId(next.id);
+    setFocus(next.id);
+  };
+  const startDockResize = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const x0 = e.clientX;
+    const w0 = dockW;
+    let w = w0;
+    const move = (ev: PointerEvent) => {
+      w = Math.min(Math.max(w0 + x0 - ev.clientX, 280), window.innerWidth - 480);
+      setDockW(w);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      try { localStorage.setItem("dockW", String(Math.round(w))); } catch { /* không lưu được thì thôi */ }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+  const toggleDock = () => {
+    setDockOn(!dockOn);
+    try { localStorage.setItem("dock", dockOn ? "0" : "1"); } catch { /* như trên */ }
+  };
   const scratch = tasks.find((t) => t.id === SCRATCH_TASK) ?? null;
   const scratchPanes = panes.filter((p) => p.taskId === SCRATCH_TASK);
   // ponytail: a fixed column count, not a draggable split tree. Covers 1–9
@@ -820,6 +858,7 @@ export default function App() {
 
           <nav className="nav">
             {navBtn("code")}
+            {navBtn("files")}
             {navBtn("workspace")}
             {/* Cấu hình workspace có bảy mục; giấu chúng sau một thanh tab bên
                 trong nghĩa là không ai biết chúng tồn tại. Bung thẳng ra đây. */}
@@ -986,14 +1025,30 @@ export default function App() {
           </div>
         </aside>
 
-        <main className="main">
+        <main className="main" style={docked ? { flexDirection: "row" } : undefined}>
           {/* The Code view stays mounted when another tab is shown. Unmounting
               it ran Pane's cleanup, which killed every PTY — switching to
               Usage and back used to lose all your running sessions. Panes now
               close only when you close them or quit. */}
-          <div className="view" style={{ display: view === "code" ? "flex" : "none" }}>
+          <div className={"view" + (docked ? " dock" : "")}
+               style={docked ? { display: "flex", width: dockW } : { display: view === "code" ? "flex" : "none" }}>
             <>
-              <div className="toolbar">
+              {dockPane && (
+                <span className="dock-rs" title="Kéo để đổi độ rộng" onPointerDown={startDockResize} />
+              )}
+              {dockPane && (
+                <div className="toolbar dock-head">
+                  <button className="btn ghost" disabled={shown.length < 2} onClick={() => stepDock(-1)}
+                          title="Terminal trước">‹</button>
+                  <span className="title">{task?.name ?? "Terminal"}</span>
+                  <span className="path">{dockAt + 1}/{shown.length}</span>
+                  <span className="sp" />
+                  <button className="btn ghost" onClick={() => setView("code")} title="Mở lưới terminal đầy đủ">⤢</button>
+                  <button className="btn ghost" disabled={shown.length < 2} onClick={() => stepDock(1)}
+                          title="Terminal sau">›</button>
+                </div>
+              )}
+              <div className="toolbar" style={docked ? { display: "none" } : undefined}>
                 {ws && (
                   <button className="ws-icon" onClick={() => setIconFor(iconFor ? null : ws.id)}
                           title={ws.icon ? `Đổi icon của ${label(ws)}` : `Chọn icon cho ${label(ws)}`}>
@@ -1080,13 +1135,13 @@ export default function App() {
                   chuyển sang một workspace chưa có tác vụ là Claude chết sạch. */}
               <div className="grid" ref={grid}
                    style={{
-                     gridTemplateColumns: zoom ? "minmax(0, 1fr)" : colFr.map((f) => `${f}fr`).join(" "),
-                     gridTemplateRows: zoom ? "minmax(0, 1fr)" : rowFr.map((f) => `minmax(0, ${f}fr)`).join(" "),
+                     gridTemplateColumns: solo ? "minmax(0, 1fr)" : colFr.map((f) => `${f}fr`).join(" "),
+                     gridTemplateRows: solo ? "minmax(0, 1fr)" : rowFr.map((f) => `minmax(0, ${f}fr)`).join(" "),
                      display: shown.length === 0 ? "none" : undefined,
                    }}>
                   {panes.map((p) => {
                     const [cls, statusLabel] = STATUS[p.status];
-                    const hidden = p.taskId !== taskId || (zoom !== null && zoom !== p.id);
+                    const hidden = p.taskId !== taskId || (solo !== null && solo !== p.id);
                     const at = shown.findIndex((x) => x.id === p.id);
                     const col = at % cols;
                     const row = Math.floor(at / cols);
@@ -1133,7 +1188,7 @@ export default function App() {
                           )}
                           <span className={"chip " + cls}><span className="d" />{p.tool ?? p.message ?? statusLabel}</span>
                           <span className="sp" />
-                          {shown.length > 1 && (
+                          {shown.length > 1 && !docked && (
                             <>
                               <button className="btn ghost" style={{ padding: "1px 6px" }} title="Move earlier"
                                       disabled={shown[0].id === p.id} onClick={() => movePane(p.id, -1)}>‹</button>
@@ -1182,11 +1237,11 @@ export default function App() {
                             setShowBlocks(null);
                           }} />
                         )}
-                        {!zoom && col < cols - 1 && (
+                        {!solo && col < cols - 1 && (
                           <span className="rs x" title="Drag to resize · double-click to even out"
                                 onPointerDown={(e) => startResize(e, "x", col)} onDoubleClick={evenSplit} />
                         )}
-                        {!zoom && row < rows - 1 && (
+                        {!solo && row < rows - 1 && (
                           <span className="rs y" title="Drag to resize · double-click to even out"
                                 onPointerDown={(e) => startResize(e, "y", row)} onDoubleClick={evenSplit} />
                         )}
@@ -1208,6 +1263,10 @@ export default function App() {
             </>
           </div>
 
+          {view === "files" && (
+            <FilesView root={ws?.path ?? ""} name={ws ? label(ws) : ""} runtime={runtime}
+                       terminals={shown.length} docked={docked} onDock={toggleDock} />
+          )}
           {view === "workspace" && (
             <WorkspaceView workspace={ws?.path ?? ""} name={ws ? label(ws) : ""} runtime={runtime} tab={wsTab} />
           )}

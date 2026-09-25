@@ -76,7 +76,10 @@ fn rt_path(runtime: &str, p: &str) -> String {
 pub fn git(runtime: &str, dir: &str, args: &[&str]) -> Result<String, String> {
     let dir = rt_path(runtime, dir);
     let out = if let Some(distro) = crate::wsl::distro_of(runtime) {
-        let mut a: Vec<&str> = vec!["-d", distro, "--", "git", "-C", &dir];
+        // `--exec`, not `--`: after `--` wsl.exe hands the joined line to the
+        // distro's shell, so zsh globbed a `:(top)file` pathspec into "no
+        // matches found" and split any path with a space in it.
+        let mut a: Vec<&str> = vec!["-d", distro, "--exec", "git", "-C", &dir];
         a.extend_from_slice(args);
         crate::wsl::exec(&a).map_err(|e| e.to_string())?
     } else {
