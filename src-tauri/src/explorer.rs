@@ -241,15 +241,29 @@ pub fn stage(runtime: &str, root: &str, files: &[String], on: bool) -> Result<()
     git(runtime, root, &a).map(|_| ())
 }
 
-/// `all`: nothing is staged, so commit every change — VS Code's "smart commit".
-pub fn commit(runtime: &str, root: &str, message: &str, all: bool) -> Result<(), String> {
-    if message.trim().is_empty() {
+/// `all`: stage every change first (VS Code's "Commit All", and its smart
+/// commit when nothing is staged). `amend` rewrites the last commit; an empty
+/// message then keeps the old one. `signoff` adds the Signed-off-by trailer.
+pub fn commit(runtime: &str, root: &str, message: &str, all: bool, amend: bool, signoff: bool) -> Result<(), String> {
+    if message.trim().is_empty() && !amend {
         return Err("Write a commit message first".into());
     }
     if all {
         git(runtime, root, &["add", "-A", "--", ":/"])?;
     }
-    git(runtime, root, &["commit", "-m", message]).map(|_| ())
+    let mut a = vec!["commit"];
+    if amend {
+        a.push("--amend");
+    }
+    if signoff {
+        a.push("--signoff");
+    }
+    if message.trim().is_empty() {
+        a.push("--no-edit");
+    } else {
+        a.extend(["-m", message]);
+    }
+    git(runtime, root, &a).map(|_| ())
 }
 
 /// Throw away working-tree changes. Tracked files go back to what is staged
@@ -285,6 +299,102 @@ pub fn pull(runtime: &str, root: &str) -> Result<(), String> {
 
 pub fn fetch(runtime: &str, root: &str) -> Result<(), String> {
     git(runtime, root, &["fetch", "--quiet"]).map(|_| ())
+}
+
+/// A name the user typed (branch, tag, remote, URL). Git parses a leading `-`
+/// as an option — `--upload-pack=<cmd>` would run a program — so refuse it.
+fn name(v: Option<&String>) -> Result<&str, String> {
+    let v = v.map(|s| s.trim()).unwrap_or_default();
+    if v.is_empty() {
+        return Err("A name is required".into());
+    }
+    if v.starts_with('-') || v.chars().any(|c| c.is_control()) {
+        return Err(format!("Not a valid name: {v}"));
+    }
+    Ok(v)
+}
+
+/// `stash@{N}`, nothing else.
+fn stash_ref(v: Option<&String>) -> Result<&str, String> {
+    let v = v.map(String::as_str).unwrap_or_default();
+    let n = v.strip_prefix("stash@{").and_then(|r| r.strip_suffix('}')).unwrap_or("");
+    if n.is_empty() || !n.chars().all(|c| c.is_ascii_digit()) {
+        return Err(format!("Not a stash: {v}"));
+    }
+    Ok(v)
+}
+
+/// Everything in the Source Control "…" menu, by name. A fixed table rather
+/// than "run these git args": the webview never gets to choose the argv, only
+/// fill in a name, and every name goes through `name()`.
+pub fn op(runtime: &str, root: &str, op: &str, a: &[String]) -> Result<String, String> {
+    let g = |args: &[&str]| git(runtime, root, args);
+    let a0 = a.first();
+    let a1 = a.get(1);
+    match op {
+        // Lists, as tab-separated lines.
+        "branches" => g(&[
+            "for-each-ref", "--sort=-committerdate",
+            "--format=%(refname)%09%(HEAD)%09%(committerdate:relative)%09%(subject)",
+            "refs/heads", "refs/remotes",
+        ]),
+        "tags" => g(&["tag", "--list", "--sort=-creatordate"]),
+        "stashes" => g(&["stash", "list", "--format=%gd%x09%s"]),
+        "remotes" => g(&["remote", "-v"]),
+        "log" => g(&["log", "-1", "--format=%s"]),
+
+        "checkout" => g(&["switch", name(a0)?]),
+        "checkout-detached" => g(&["switch", "--detach", name(a0)?]),
+        "branch-create" => match a1 {
+            Some(from) if !from.is_empty() => g(&["switch", "-c", name(a0)?, name(Some(from))?]),
+            _ => g(&["switch", "-c", name(a0)?]),
+        },
+        "branch-rename" => g(&["branch", "-m", name(a0)?]),
+        "branch-delete" => g(&["branch", "-d", name(a0)?]),
+        "branch-delete-force" => g(&["branch", "-D", name(a0)?]),
+        "merge" => g(&["merge", "--no-edit", name(a0)?]),
+        "merge-abort" => g(&["merge", "--abort"]),
+        "rebase" => g(&["rebase", name(a0)?]),
+        "rebase-abort" => g(&["rebase", "--abort"]),
+
+        "commit-undo" => g(&["reset", "--soft", "HEAD~1"]),
+
+        "pull" => g(&["pull", "--ff-only"]),
+        "pull-rebase" => g(&["pull", "--rebase"]),
+        "pull-from" => g(&["pull", "--ff-only", name(a0)?, name(a1)?]),
+        "push" => g(&["push"]),
+        "publish" => g(&["push", "-u", "origin", "HEAD"]),
+        "push-force" => g(&["push", "--force-with-lease"]),
+        "push-to" => g(&["push", "-u", name(a0)?, "HEAD"]),
+        "push-tags" => g(&["push", "--tags"]),
+        "sync" => g(&["pull", "--ff-only"]).and_then(|_| g(&["push"])),
+        "fetch" => g(&["fetch", "--quiet"]),
+        "fetch-prune" => g(&["fetch", "--prune", "--quiet"]),
+        "fetch-all" => g(&["fetch", "--all", "--quiet"]),
+
+        "remote-add" => g(&["remote", "add", name(a0)?, name(a1)?]),
+        "remote-remove" => g(&["remote", "remove", name(a0)?]),
+
+        "stash" => g(&["stash", "push"]),
+        "stash-untracked" => g(&["stash", "push", "--include-untracked"]),
+        "stash-staged" => g(&["stash", "push", "--staged"]),
+        "stash-message" => g(&["stash", "push", "-m", a0.map(String::as_str).unwrap_or("")]),
+        "stash-pop" => g(&["stash", "pop", stash_ref(a0)?]),
+        "stash-apply" => g(&["stash", "apply", stash_ref(a0)?]),
+        "stash-drop" => g(&["stash", "drop", stash_ref(a0)?]),
+        "stash-clear" => g(&["stash", "clear"]),
+
+        "tag-create" => match a1 {
+            Some(msg) if !msg.trim().is_empty() => g(&["tag", "-a", name(a0)?, "-m", msg]),
+            _ => g(&["tag", name(a0)?]),
+        },
+        "tag-delete" => g(&["tag", "-d", name(a0)?]),
+
+        "stage-all" => g(&["add", "-A", "--", ":/"]),
+        "unstage-all" => g(&["reset", "-q"]),
+        "discard-all" => g(&["restore", "--", ":/"]).and_then(|_| g(&["clean", "-fdq", "--", ":/"])),
+        _ => Err(format!("Unknown git action: {op}")),
+    }
 }
 
 #[cfg(test)]
@@ -334,6 +444,57 @@ mod tests {
         assert!(!d.join("sub/new file.txt").exists());
         assert_eq!(std::fs::read_to_string(d.join("keep.txt")).unwrap(), "mine\n");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The menu's git plumbing against a real repository.
+    #[test]
+    fn menu_ops_run_real_git() {
+        let d = std::env::temp_dir().join(format!("as-menu-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let r = d.to_string_lossy().to_string();
+        let o = |op: &str, a: &[&str]| op_(&r, op, a);
+        for a in [&["init", "-q", "-b", "main"][..], &["config", "user.email", "t@t"], &["config", "user.name", "t"]] {
+            git("host", &r, a).unwrap();
+        }
+        std::fs::write(d.join("a.txt"), "1\n").unwrap();
+        commit("host", &r, "first", true, false, false).unwrap();
+
+        o("branch-create", &["feat"]).unwrap();
+        assert!(o("branches", &[]).unwrap().contains("refs/heads/feat\t*"), "on the new branch");
+        o("checkout", &["main"]).unwrap();
+        assert!(o("branches", &[]).unwrap().contains("refs/heads/main\t*"));
+
+        std::fs::write(d.join("a.txt"), "2\n").unwrap();
+        o("stash", &[]).unwrap();
+        assert_eq!(std::fs::read_to_string(d.join("a.txt")).unwrap(), "1\n");
+        assert!(o("stashes", &[]).unwrap().starts_with("stash@{0}\t"));
+        o("stash-pop", &["stash@{0}"]).unwrap();
+        assert_eq!(std::fs::read_to_string(d.join("a.txt")).unwrap(), "2\n");
+
+        commit("host", &r, "second", true, false, false).unwrap();
+        o("tag-create", &["v1", "release"]).unwrap();
+        assert_eq!(o("tags", &[]).unwrap(), "v1");
+        o("commit-undo", &[]).unwrap();
+        assert_eq!(o("log", &[]).unwrap(), "first");
+        o("branch-delete", &["feat"]).unwrap();
+        assert!(!o("branches", &[]).unwrap().contains("feat"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn op_(r: &str, op_name: &str, a: &[&str]) -> Result<String, String> {
+        op("host", r, op_name, &a.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn menu_names_cannot_become_options() {
+        let s = |v: &str| Some(v.to_string());
+        assert!(name(s("feature/x").as_ref()).is_ok());
+        assert!(name(s("--upload-pack=evil").as_ref()).is_err());
+        assert!(name(s(" ").as_ref()).is_err());
+        assert!(stash_ref(s("stash@{2}").as_ref()).is_ok());
+        assert!(stash_ref(s("stash@{x}").as_ref()).is_err());
+        assert!(op("host", "/", "rm-rf", &[]).is_err());
     }
 
     #[test]

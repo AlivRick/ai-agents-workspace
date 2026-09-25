@@ -3,6 +3,7 @@ import { Marked } from "marked";
 import { api, shortPath, type Entry, type ScmItem, type ScmStatus } from "./api";
 import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import CodeEditor from "./CodeEditor";
+import { Menu, Picker, type Item, type Pick, type PickerAsk } from "./ScmMenu";
 import { parseDiff, sideBySide, type Row } from "./diff";
 import { allFiles, buildTree, type Folder } from "./scmtree";
 import { fileIcon, folderIcon, type IconTable } from "./icons";
@@ -65,6 +66,10 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
    *  file means "discard them". */
   const [pending, setPending] = useState("");
   const [tick, setTick] = useState(0);
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
+  const [ask, setAsk] = useState<PickerAsk | null>(null);
+  const [output, setOutput] = useState<{ at: number; label: string; ok: boolean; text: string }[]>([]);
+  const [showOut, setShowOut] = useState(false);
   /** Source Control as a folder tree or a flat list, like VS Code's toggle. */
   const [asTree, setAsTree] = useState(() => { try { return localStorage.getItem("scmTree") === "1"; } catch { return false; } });
   /** Collapsed groups and folders. */
@@ -221,11 +226,226 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
     const tracked = files.filter((f) => f.status !== "U").map((f) => f.path);
     run(() => api.scmDiscard(root, tracked, untracked, runtime));
   };
-  const sync = (op: "push" | "publish" | "pull" | "fetch") => run(() => api.scmSync(root, op, runtime));
+  const sync = (op: "push" | "publish" | "pull" | "fetch") => gitOp(op[0].toUpperCase() + op.slice(1), op);
   const nothingStaged = !scm?.staged.length;
-  const canCommit = !!scm && !!msg.trim() && !scm.merge.length && (scm.staged.length > 0 || scm.changes.length > 0);
+  const canCommit = !!scm && !scm.merge.length && (scm.staged.length > 0 || scm.changes.length > 0);
   /** Nothing staged means "commit everything", VS Code's smart commit. */
-  const commit = () => canCommit && run(async () => { await api.scmCommit(root, msg, nothingStaged, runtime); setMsg(""); });
+  const commit = () => canCommit && void commitWith("auto");
+
+  // ------------------------------------------------ the "…" menu, VS Code's
+  /** Every git action run from this view, for "Show Git Output". */
+  const note = (label: string, ok: boolean, text: string) =>
+    setOutput((o) => [...o.slice(-199), { at: Date.now(), label, ok, text }]);
+  const gitOp = (label: string, op: string, args: string[] = []) => run(async () => {
+    try { note(label, true, await api.scmOp(root, op, args, runtime)); }
+    catch (e) { note(label, false, String(e)); throw e; }
+  });
+  /** Ask with the quick pick; null when cancelled. */
+  const prompt = (title: string, o: Omit<PickerAsk, "title" | "resolve">) =>
+    new Promise<string | null>((res) => setAsk({ title, ...o, resolve: (v) => { setAsk(null); res(v); } }));
+  const lines = async (op: string) => (await api.scmOp(root, op, [], runtime)).split("\n").filter(Boolean);
+  const branches = async () => (await lines("branches"))
+    .map((l) => {
+      const [ref, head, when, subj] = l.split("\t");
+      const remote = ref.startsWith("refs/remotes/");
+      return { short: ref.replace(/^refs\/(heads|remotes)\//, ""), remote, current: head === "*", when, subj };
+    })
+    .filter((b) => !b.remote || (b.short.includes("/") && !b.short.endsWith("/HEAD")));
+  const branchPicks = (bs: Awaited<ReturnType<typeof branches>>): Pick[] => bs.map((b) => ({
+    label: b.short, value: b.short,
+    description: b.current ? "current" : b.remote ? "remote branch" : "", detail: `${b.when} · ${b.subj}`,
+  }));
+  const remotes = async () => [...new Set((await lines("remotes")).map((l) => l.split("\t")[0]))];
+  /** Wrap an async menu action so a failed list read lands in the banner. */
+  const act = (f: () => Promise<unknown>) => () => { f().catch((e) => setError(String(e))); };
+
+  const commitWith = async (mode: "auto" | "staged" | "all", amend = false, signoff = false) => {
+    if (!scm) return;
+    if (mode === "staged" && nothingStaged && !amend) return setError("There are no staged changes to commit.");
+    let m = msg.trim();
+    if (!m && !amend) {
+      const v = await prompt("Commit message", { placeholder: `Message (commit on "${scm.branch}")`, free: true });
+      if (!v) return;
+      m = v;
+    }
+    const all = mode === "all" || (mode === "auto" && nothingStaged);
+    run(async () => {
+      try { await api.scmCommit(root, m, all, runtime, amend, signoff); note(amend ? "Commit (Amend)" : "Commit", true, m); }
+      catch (e) { note("Commit", false, String(e)); throw e; }
+      setMsg("");
+    });
+  };
+  const checkoutTo = act(async () => {
+    const bs = await branches();
+    const v = await prompt("Checkout to…", { placeholder: "Select a branch to checkout", items: [
+      { label: "+ Create new branch…", value: "\0new" },
+      { label: "+ Create new branch from…", value: "\0from" },
+      ...branchPicks(bs),
+    ] });
+    if (!v) return;
+    if (v === "\0new" || v === "\0from") return createBranch(v === "\0from");
+    const b = bs.find((x) => x.short === v);
+    // A remote branch checks out as the local branch of the same name, which
+    // `git switch` creates and sets to track the remote.
+    const local = b?.remote ? v.slice(v.indexOf("/") + 1) : v;
+    gitOp(`Checkout ${local}`, "checkout", [local]);
+  });
+  const createBranch = async (from: boolean) => {
+    let ref = "";
+    if (from) {
+      const r = await prompt("Create branch from…", { placeholder: "Select a ref to create the branch from", items: branchPicks(await branches()) });
+      if (!r) return;
+      ref = r;
+    }
+    const n = await prompt("Create branch", { placeholder: "Branch name", free: true });
+    if (!n) return;
+    const name = n.replace(/\s+/g, "-");
+    gitOp(`Create branch ${name}`, "branch-create", ref ? [name, ref] : [name]);
+  };
+  const pickOther = async (title: string, local = false) => {
+    const bs = (await branches()).filter((b) => !b.current && (!local || !b.remote));
+    return prompt(title, { placeholder: "Select a branch", items: branchPicks(bs) });
+  };
+  const deleteBranch = act(async () => {
+    const b = await pickOther("Delete branch", true);
+    if (!b) return;
+    try { note(`Delete branch ${b}`, true, await api.scmOp(root, "branch-delete", [b], runtime)); setTick((n) => n + 1); }
+    catch (e) {
+      note(`Delete branch ${b}`, false, String(e));
+      if (!/not fully merged/i.test(String(e))) return setError(String(e));
+      const ok = await confirmDialog(`The branch "${b}" is not fully merged. Delete anyway?`,
+        { title: "Delete branch", kind: "warning", okLabel: "Delete", cancelLabel: "Cancel" });
+      if (ok) gitOp(`Force delete ${b}`, "branch-delete-force", [b]);
+    }
+  });
+  const pickStash = async (title: string) => {
+    const st = await lines("stashes");
+    if (!st.length) { setError("There are no stashes."); return null; }
+    return prompt(title, { placeholder: "Select a stash", items: st.map((l) => {
+      const [ref, m] = l.split("\t");
+      return { label: m, value: ref, description: ref };
+    }) });
+  };
+  const pickRemote = async (title: string) => {
+    const rs = await remotes();
+    if (!rs.length) { setError("This repository has no remotes."); return null; }
+    return prompt(title, { placeholder: "Select a remote", items: rs.map((r) => ({ label: r, value: r })) });
+  };
+
+  const menu: Item[] = [
+    { label: "Pull", run: () => gitOp("Pull", "pull") },
+    { label: "Push", run: () => gitOp(scm?.upstream ? "Push" : "Publish Branch", scm?.upstream ? "push" : "publish") },
+    { label: "Checkout to…", run: checkoutTo },
+    { label: "Fetch", run: () => gitOp("Fetch", "fetch") },
+    "-",
+    { label: "Commit", sub: [
+      { label: "Commit", run: () => void commitWith("auto") },
+      { label: "Commit Staged", run: () => void commitWith("staged") },
+      { label: "Commit All", run: () => void commitWith("all") },
+      { label: "Undo Last Commit", run: act(async () => {
+        const last = await api.scmOp(root, "log", [], runtime);
+        await gitOp("Undo Last Commit", "commit-undo");
+        if (!msg.trim()) setMsg(last); // VS Code puts the message back in the box
+      }) },
+      { label: "Abort Rebase", run: () => gitOp("Abort Rebase", "rebase-abort") },
+      "-",
+      { label: "Commit (Amend)", run: () => void commitWith("auto", true) },
+      { label: "Commit Staged (Amend)", run: () => void commitWith("staged", true) },
+      { label: "Commit All (Amend)", run: () => void commitWith("all", true) },
+      "-",
+      { label: "Commit (Signed Off)", run: () => void commitWith("auto", false, true) },
+      { label: "Commit Staged (Signed Off)", run: () => void commitWith("staged", false, true) },
+      { label: "Commit All (Signed Off)", run: () => void commitWith("all", false, true) },
+    ] },
+    { label: "Changes", sub: [
+      { label: "Stage All Changes", run: () => gitOp("Stage All", "stage-all") },
+      { label: "Unstage All Changes", run: () => gitOp("Unstage All", "unstage-all") },
+      { label: "Discard All Changes", run: () => void discard(scm?.changes ?? []) },
+    ] },
+    { label: "Pull, Push", sub: [
+      { label: "Sync", run: () => gitOp("Sync", "sync") },
+      "-",
+      { label: "Pull", run: () => gitOp("Pull", "pull") },
+      { label: "Pull (Rebase)", run: () => gitOp("Pull (Rebase)", "pull-rebase") },
+      { label: "Pull from…", run: act(async () => {
+        const r = await pickRemote("Pull from…");
+        const b = r && await prompt(`Pull from ${r}`, { placeholder: "Branch name", free: true, items: [] });
+        if (r && b) gitOp(`Pull from ${r}/${b}`, "pull-from", [r, b]);
+      }) },
+      "-",
+      { label: "Push", run: () => gitOp("Push", scm?.upstream ? "push" : "publish") },
+      { label: "Push to…", run: act(async () => { const r = await pickRemote("Push to…"); if (r) gitOp(`Push to ${r}`, "push-to", [r]); }) },
+      { label: "Push (Force With Lease)", run: act(async () => {
+        const ok = await confirmDialog("Force push overwrites the remote branch with yours. Continue?",
+          { title: "Force push", kind: "warning", okLabel: "Force Push", cancelLabel: "Cancel" });
+        if (ok) gitOp("Push (Force)", "push-force");
+      }) },
+      "-",
+      { label: "Fetch", run: () => gitOp("Fetch", "fetch") },
+      { label: "Fetch (Prune)", run: () => gitOp("Fetch (Prune)", "fetch-prune") },
+      { label: "Fetch From All Remotes", run: () => gitOp("Fetch All", "fetch-all") },
+    ] },
+    { label: "Branch", sub: [
+      { label: "Merge…", run: act(async () => { const b = await pickOther("Merge branch into current"); if (b) gitOp(`Merge ${b}`, "merge", [b]); }) },
+      { label: "Rebase Branch…", run: act(async () => { const b = await pickOther("Rebase current branch onto"); if (b) gitOp(`Rebase onto ${b}`, "rebase", [b]); }) },
+      { label: "Abort Merge", run: () => gitOp("Abort Merge", "merge-abort") },
+      "-",
+      { label: "Create Branch…", run: act(() => createBranch(false)) },
+      { label: "Create Branch From…", run: act(() => createBranch(true)) },
+      "-",
+      { label: "Rename Branch…", run: act(async () => {
+        const n = await prompt(`Rename branch "${scm?.branch}"`, { placeholder: "New branch name", free: true });
+        if (n) gitOp(`Rename branch to ${n}`, "branch-rename", [n.replace(/\s+/g, "-")]);
+      }) },
+      { label: "Delete Branch…", run: deleteBranch },
+      "-",
+      { label: "Publish Branch…", run: () => gitOp("Publish Branch", "publish"), disabled: !!scm?.upstream },
+    ] },
+    { label: "Remote", sub: [
+      { label: "Add Remote…", run: act(async () => {
+        const url = await prompt("Add remote", { placeholder: "Repository URL", free: true });
+        const n = url && await prompt("Add remote", { placeholder: "Remote name", free: true });
+        if (url && n) gitOp(`Add remote ${n}`, "remote-add", [n, url]);
+      }) },
+      { label: "Remove Remote…", run: act(async () => { const r = await pickRemote("Remove remote"); if (r) gitOp(`Remove remote ${r}`, "remote-remove", [r]); }) },
+    ] },
+    { label: "Stash", sub: [
+      { label: "Stash", run: () => gitOp("Stash", "stash") },
+      { label: "Stash (Include Untracked)", run: () => gitOp("Stash (Include Untracked)", "stash-untracked") },
+      { label: "Stash Staged", run: () => gitOp("Stash Staged", "stash-staged") },
+      { label: "Stash with Message…", run: act(async () => {
+        const m = await prompt("Stash", { placeholder: "Stash message", free: true });
+        if (m) gitOp("Stash", "stash-message", [m]);
+      }) },
+      "-",
+      { label: "Apply Stash…", run: act(async () => { const r = await pickStash("Apply stash"); if (r) gitOp(`Apply ${r}`, "stash-apply", [r]); }) },
+      { label: "Pop Stash…", run: act(async () => { const r = await pickStash("Pop stash"); if (r) gitOp(`Pop ${r}`, "stash-pop", [r]); }) },
+      "-",
+      { label: "Drop Stash…", run: act(async () => { const r = await pickStash("Drop stash"); if (r) gitOp(`Drop ${r}`, "stash-drop", [r]); }) },
+      { label: "Drop All Stashes…", run: act(async () => {
+        const ok = await confirmDialog("Drop ALL stashes? This cannot be undone.",
+          { title: "Drop stashes", kind: "warning", okLabel: "Drop All", cancelLabel: "Cancel" });
+        if (ok) gitOp("Drop All Stashes", "stash-clear");
+      }) },
+    ] },
+    { label: "Tags", sub: [
+      { label: "Create Tag…", run: act(async () => {
+        const n = await prompt("Create tag", { placeholder: "Tag name", free: true });
+        if (!n) return;
+        const m = await prompt(`Tag "${n}"`, { placeholder: "Message (optional — Esc for a lightweight tag)", free: true });
+        gitOp(`Create tag ${n}`, "tag-create", m ? [n, m] : [n]);
+      }) },
+      { label: "Delete Tag…", run: act(async () => {
+        const tags = await lines("tags");
+        if (!tags.length) return setError("This repository has no tags.");
+        const t = await prompt("Delete tag", { placeholder: "Select a tag", items: tags.map((x) => ({ label: x, value: x })) });
+        if (t) gitOp(`Delete tag ${t}`, "tag-delete", [t]);
+      }) },
+      { label: "Push Tags", run: () => gitOp("Push Tags", "push-tags") },
+    ] },
+    "-",
+    { label: "Show Git Output", run: () => setShowOut(true) },
+  ];
 
 
 
@@ -325,7 +545,9 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
       <div className="toolbar">
         <span className="title">{name}</span>
         <span className="path">{shortPath(root)}</span>
-        {scm?.branch && <span className="branch">{scm.branch}</span>}
+        {scm?.branch && (
+          <button className="branch" title="Checkout to… (switch branch)" onClick={checkoutTo}>⎇ {scm.branch}</button>
+        )}
         <span className="sp" />
         <button className="btn ghost" onClick={() => setTick((n) => n + 1)} title="Re-read git status">⟳ Refresh</button>
         {terminals > 0 && (
@@ -349,6 +571,8 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
                 <button className="mini" disabled={busy} title={scm.upstream ? "Push" : "Publish Branch"}
                         onClick={() => sync(scm.upstream ? "push" : "publish")}>↑</button>
                 <button className="mini" disabled={busy} title="Fetch" onClick={() => sync("fetch")}>⟳</button>
+                <button className="mini" title="More Actions…"
+                        onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setMenuAt({ x: r.left, y: r.bottom + 2 }); }}>···</button>
               </div>
               <div className="commit">
                 <textarea placeholder={`Message (Ctrl+Enter to commit on "${scm.branch}")`} value={msg} rows={2}
@@ -442,6 +666,26 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
           )}
         </div>
       </div>
+      {menuAt && <Menu items={menu} x={menuAt.x} y={menuAt.y} onClose={() => setMenuAt(null)} />}
+      {ask && <Picker ask={ask} />}
+      {showOut && (
+        <div className="modal" onClick={() => setShowOut(false)}>
+          <div className="sheet wide" onClick={(e) => e.stopPropagation()}>
+            <header><b>Git Output</b><span className="sp" />
+              <button className="btn ghost" onClick={() => setOutput([])}>Clear</button>
+              <button className="btn ghost" onClick={() => setShowOut(false)}>Close</button></header>
+            <div className="git-out">
+              {output.length === 0 && <div className="hint">Nothing run yet.</div>}
+              {output.map((o, i) => (
+                <div key={i} className={o.ok ? "" : "bad"}>
+                  <b>{new Date(o.at).toLocaleTimeString()} · {o.label}{o.ok ? "" : " — failed"}</b>
+                  {o.text && <pre>{o.text}</pre>}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
       {error && <div className="banner err"><span>{error}</span><span className="sp" style={{ flex: 1 }} /><button className="btn" onClick={() => setError("")}>Dismiss</button></div>}
     </div>
   );

@@ -159,8 +159,11 @@ export const api = {
     invoke<string>("scm_diff", { root, file, staged, runtime }),
   scmStage: (root: string, files: string[], on: boolean, runtime?: string) =>
     invoke<void>("scm_stage", { root, files, on, runtime }),
-  scmCommit: (root: string, message: string, all: boolean, runtime?: string) =>
-    invoke<void>("scm_commit", { root, message, all, runtime }),
+  scmCommit: (root: string, message: string, all: boolean, runtime?: string, amend = false, signoff = false) =>
+    invoke<void>("scm_commit", { root, message, all, amend, signoff, runtime }),
+  /** One entry of the Source Control "…" menu, by name (see explorer::op). */
+  scmOp: (root: string, op: string, args: string[] = [], runtime?: string) =>
+    invoke<string>("scm_op", { root, op, args, runtime }),
   scmOriginal: (root: string, file: string, runtime?: string) =>
     invoke<string | null>("scm_original", { root, file, runtime }),
   scmDiscard: (root: string, tracked: string[], untracked: string[], runtime?: string) =>

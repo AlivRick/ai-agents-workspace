@@ -654,9 +654,19 @@ async fn scm_stage(root: String, files: Vec<String>, on: bool, runtime: Option<S
 }
 
 #[tauri::command]
-async fn scm_commit(root: String, message: String, all: bool, runtime: Option<String>) -> Result<(), String> {
+async fn scm_commit(
+    root: String, message: String, all: bool, amend: Option<bool>, signoff: Option<bool>, runtime: Option<String>,
+) -> Result<(), String> {
     let r = rt(runtime);
-    blocking(move || explorer::commit(&r, &root, &message, all)).await?
+    let (amend, signoff) = (amend.unwrap_or(false), signoff.unwrap_or(false));
+    blocking(move || explorer::commit(&r, &root, &message, all, amend, signoff)).await?
+}
+
+/// One entry of the Source Control "…" menu. See `explorer::op`.
+#[tauri::command]
+async fn scm_op(root: String, op: String, args: Vec<String>, runtime: Option<String>) -> Result<String, String> {
+    let r = rt(runtime);
+    blocking(move || explorer::op(&r, &root, &op, &args)).await?
 }
 
 #[tauri::command]
@@ -798,6 +808,7 @@ pub fn run() {
             scm_discard,
             scm_original,
             scm_sync,
+            scm_op,
             claude_projects,
             default_runtime,
             set_runtime,
