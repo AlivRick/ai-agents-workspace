@@ -8,6 +8,7 @@ import { Menu, type Item } from "./ScmMenu";
 import { locations, lspFor } from "./lsp";
 import { api } from "./api";
 import Peek, { type Ref } from "./Peek";
+import { ctrlLink } from "./ctrllink";
 import { LanguageDescription } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { Compartment, EditorState, RangeSet, StateEffect, StateField } from "@codemirror/state";
@@ -73,6 +74,28 @@ const changeGutter = [base, bars, gutter({ class: "cm-chg-gutter", markers: (v) 
  * ponytail: always the VS Code Dark colours, whichever of the app's themes is
  * on. The upgrade path is a light theme compartment switched with the app's.
  */
+/** Ctrl+hover: the first lines of the definition, indentation trimmed. */
+async function defPreview(v: EditorView, pos: number) {
+  const d = await locations(v, "definition", pos);
+  const r = d?.[0];
+  if (!r) return null;
+  const root = v.dom.closest<HTMLElement>("[data-root]")?.dataset.root ?? "";
+  const text = r.uri === LSPPlugin.get(v)?.uri ? v.state.doc.toString()
+    : r.path ? await api.fsRead(root, r.path).catch(() => null) : null;
+  if (text == null) return { text: r.uri, file: "" };
+  const lines = text.split("\n").slice(r.line, r.line + 8);
+  const pad = Math.min(...lines.filter((l) => l.trim()).map((l) => l.length - l.trimStart().length));
+  return { text: lines.map((l) => l.slice(pad)).join("\n").trimEnd(), file: r.path ?? "" };
+}
+function renderPreview(p: { text: string; file: string }) {
+  const dom = document.createElement("div");
+  dom.className = "cm-def-tip";
+  const lang = new Compartment();
+  const v = new EditorView({ parent: dom, state: EditorState.create({ doc: p.text, extensions: [vscodeDark, lang.of([]), EditorView.editable.of(false), EditorState.readOnly.of(true)] }) });
+  LanguageDescription.matchFilename(languages, p.file.split(/[\\/]/).pop() ?? "")?.load().then((l) => v.dispatch({ effects: lang.reconfigure(l) })).catch(() => {});
+  return { dom, destroy: () => v.destroy() };
+}
+
 export default function CodeEditor({ file, value, original, onChange, onSave, root, runtime, onLspFail }: {
   file: string; value: string; original: string | null | undefined;
   onChange: (v: string) => void; onSave: () => void;
@@ -105,6 +128,7 @@ export default function CodeEditor({ file, value, original, onChange, onSave, ro
           lang.current.of([]),
           lsp.current.of([]),
           peekZone(slot),
+          ctrlLink(defPreview, renderPreview),
           // Ctrl+Click (Cmd on a Mac) goes to the definition, as in VS Code.
           EditorView.domEventHandlers({
             mousedown: (e, v) => {
@@ -209,13 +233,6 @@ export default function CodeEditor({ file, value, original, onChange, onSave, ro
     if (r.uri === p?.uri) go(v);
     else if (r.path) void p?.client.workspace.displayFile(r.uri).then((t) => t && go(t));
   };
-  const box = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const f = (e: KeyboardEvent) => box.current?.classList.toggle("ctrl", smart && (e.ctrlKey || e.metaKey));
-    window.addEventListener("keydown", f);
-    window.addEventListener("keyup", f);
-    return () => { window.removeEventListener("keydown", f); window.removeEventListener("keyup", f); };
-  }, [smart]);
   // The zone lives inside the editor's content, which is as wide as its longest
   // line. Size it to what is on screen and pin it left of a sideways scroll.
   useEffect(() => {
@@ -256,7 +273,7 @@ export default function CodeEditor({ file, value, original, onChange, onSave, ro
   ];
 
   return (
-    <div className="code-ed" ref={box} onContextMenu={(e) => {
+    <div className="code-ed" onContextMenu={(e) => {
       const el = e.target as HTMLElement;
       if (!el.closest(".cm-content") || el.closest(".peek")) return;
       e.preventDefault();
@@ -266,7 +283,7 @@ export default function CodeEditor({ file, value, original, onChange, onSave, ro
       if (v && pos != null && !v.state.selection.ranges.some((r) => r.from <= pos && pos <= r.to)) v.dispatch({ selection: { anchor: pos } });
       setMenu({ x: e.clientX, y: e.clientY });
     }}>
-      <div className="code-host" ref={host} />
+      <div className="code-host" ref={host} data-root={root} />
       <ScrollRuler target={scroller} />
       {menu && <Menu items={items} x={menu.x} y={menu.y} onClose={() => setMenu(null)} />}
       {peek && createPortal(<Peek refs={peek.refs} texts={peek.texts} rel={rel} onOpen={openRef} onClose={() => void closePeek()} />, slot)}

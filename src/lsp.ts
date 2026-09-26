@@ -160,13 +160,13 @@ const locs = (r: unknown): Loc[] => (!r ? [] : (Array.isArray(r) ? r : [r]))
   .map((x: any) => (x.targetUri ? { uri: x.targetUri, range: x.targetSelectionRange ?? x.targetRange } : x));
 
 /** Ask the server where the symbol under the cursor is defined, or used. */
-export async function locations(view: EditorView, what: "definition" | "references"): Promise<Ref[] | null> {
+export async function locations(view: EditorView, what: "definition" | "references", at?: number): Promise<Ref[] | null> {
   const p = LSPPlugin.get(view);
   if (!p) return null;
   p.client.sync();
   const r = await p.client.request("textDocument/" + what, {
     textDocument: { uri: p.uri },
-    position: p.toPosition(view.state.selection.main.head),
+    position: p.toPosition(at ?? view.state.selection.main.head),
     ...(what === "references" ? { context: { includeDeclaration: true } } : {}),
   });
   return locs(r).map((l) => ({

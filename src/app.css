@@ -902,8 +902,13 @@ table.plain td.mono { font-family: var(--mono); }
 
 /* Peek References: VS Code's peek zone, blue-edged, preview left, list right. */
 .peek-slot { display: block; position: sticky; }
-/* Ctrl held: Ctrl+Click goes to a definition, so the pointer says so. */
-.code-ed.ctrl .cm-content { cursor: pointer; }
+/* Ctrl+hover, VS Code's: the symbol becomes a link (editorLink.activeForeground)
+   and its definition shows underneath. */
+.cm-ctrl-link, .cm-ctrl-link * { color: #4e94ce !important; text-decoration: underline; cursor: pointer; }
+.cm-tooltip:has(> .cm-def-tip) { border: 1px solid #454545; background: #252526; }
+.cm-def-tip { max-width: min(640px, 80vw); max-height: 220px; overflow: auto; padding: 4px 8px; }
+.cm-def-tip .cm-editor { background: transparent; font-size: 12.5px; }
+.cm-def-tip .cm-scroller { font-family: var(--mono); line-height: 1.5; }
 .peek { height: 290px; overflow: hidden; display: flex; flex-direction: column; margin: 2px 0; border-top: 2px solid #3794ff; border-bottom: 2px solid #3794ff;
         background: #1b2530; font-family: system-ui, sans-serif; font-size: 12.5px; color: #cccccc; white-space: normal; outline: none; cursor: default; }
 .peek-head { flex: none; display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px 0 12px; background: #1f2d3b; }
