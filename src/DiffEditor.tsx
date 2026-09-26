@@ -50,12 +50,16 @@ export default function DiffEditor({ file, old, value, editable, split, onChange
         },
       };
     };
-    const b = side(value, editable, split ? [] : unifiedMergeView({ original: old, mergeControls: false, gutter: true }));
+    // The default scanLimit (500) gives up on a file with many edits and marks
+    // one huge chunk, which painted the whole ruler. The timeout keeps a giant
+    // file from freezing the view: past 500ms it falls back to the coarse diff.
+    const diffConfig = { scanLimit: 20000, timeout: 500 };
+    const b = side(value, editable, split ? [] : unifiedMergeView({ original: old, mergeControls: false, gutter: true, diffConfig }));
     if (split) {
       const a = side(old, false);
       const mv = new MergeView({
         a: a.state, b: b.state, parent: host.current!, gutter: true, highlightChanges: true,
-        revertControls: editable ? "a-to-b" : undefined,
+        revertControls: editable ? "a-to-b" : undefined, diffConfig,
       });
       langs.push([mv.a, a.lang], [mv.b, b.lang]);
       cur.current = { a: mv.a, b: mv.b, destroy: () => mv.destroy() };
@@ -113,7 +117,7 @@ export default function DiffEditor({ file, old, value, editable, split, onChange
   return (
     <div className="diff-ed">
       <div className="diff-host" ref={host} />
-      <ScrollRuler target={scroller} marks={marks} />
+      <ScrollRuler target={scroller} marks={marks} wide />
     </div>
   );
 }

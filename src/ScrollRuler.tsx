@@ -8,8 +8,9 @@ export type RulerMark = { top: number; h: number; lane: "a" | "b" };
  * own thin one, which it hides: the visible part shaded, optional marks, and
  * the whole strip is grab-able — click to jump there, drag the shaded part to
  * scroll. The parent places it (`.ruler`) beside or over the scroller.
+ * `wide` is the diff's ruler: VS Code's two-lane overview, old | new.
  */
-export default function ScrollRuler({ target, marks = [] }: { target: HTMLElement | null; marks?: RulerMark[] }) {
+export default function ScrollRuler({ target, marks = [], wide }: { target: HTMLElement | null; marks?: RulerMark[]; wide?: boolean }) {
   const [port, setPort] = useState({ top: 0, h: 1 });
 
   useEffect(() => {
@@ -44,7 +45,7 @@ export default function ScrollRuler({ target, marks = [] }: { target: HTMLElemen
   const pct = (f: number) => `${f * 100}%`;
 
   return (
-    <div className="ruler" onMouseDown={drag}>
+    <div className={"ruler" + (wide ? " wide" : "")} onMouseDown={drag}>
       {port.h < 1 && <div className="port" style={{ top: pct(port.top), height: pct(port.h) }} />}
       {marks.map((m, i) => <div key={i} className={"rm " + m.lane} style={{ top: pct(m.top), height: pct(m.h) }} />)}
     </div>

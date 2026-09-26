@@ -13,6 +13,12 @@ import iconTable from "./icons.gen.json";
  *  makes the Diff tab available. */
 type Open = { abs: string; rel?: string; staged?: boolean; status?: string };
 type Mode = "edit" | "diff" | "preview";
+/** An editor tab: a file and how it was last shown. */
+type Tab = Open & { mode: Mode };
+/** A file opened from Source Control's staged group is its own tab. */
+const tkey = (o: Open) => o.abs + (o.staged ? "|staged" : "");
+/** Drag payload from the tree: the files' paths, as JSON. */
+const DRAG = "application/x-agentspace-files";
 type Group = "merge" | "staged" | "changes";
 const STATUS_NAME: Record<string, string> = {
   M: "Modified", A: "Added", D: "Deleted", R: "Renamed", C: "Copied", U: "Untracked", T: "Type changed", "!": "Conflict",
@@ -67,7 +73,6 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
   const [busy, setBusy] = useState(false);
   /** Clicking away from unsaved edits asks once — a second click on the same
    *  file means "discard them". */
-  const [pending, setPending] = useState("");
   const [tick, setTick] = useState(0);
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   /** The Explorer's right-click menu; `e` null is the workspace folder itself. */
@@ -76,6 +81,13 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
   const [clip, setClip] = useState<{ path: string; cut: boolean } | null>(null);
   /** The last row clicked, for F2 / Del / Ctrl+C·X·V. */
   const [sel, setSel] = useState<Entry | null>(null);
+  /** Rows picked with Ctrl/Shift+click, to drag into the editor as tabs. */
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const anchor = useRef("");
+  const [tabs, setTabs] = useState<Tab[]>([]);
+  /** Edits of tabs that are not on screen, so switching tabs loses nothing. */
+  const stash = useRef<Record<string, { text: string; saved: string }>>({});
+  const [dropping, setDropping] = useState(false);
   const [ask, setAsk] = useState<PickerAsk | null>(null);
   const [output, setOutput] = useState<{ at: number; label: string; ok: boolean; text: string }[]>([]);
   const [showOut, setShowOut] = useState(false);
@@ -100,6 +112,8 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
   useEffect(() => {
     setKids({});
     setOpen(null);
+    setTabs([]);
+    stash.current = {};
     if (root) api.fsList(root, root).then((e) => setKids({ [root]: e })).catch((e) => setError(String(e)));
   }, [root]);
 
@@ -160,6 +174,9 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
 
   useEffect(() => {
     if (!open) return;
+    // Back to a tab with edits of its own: show those, not the disk copy.
+    const b = stash.current[tkey(open)];
+    if (b) { delete stash.current[tkey(open)]; setText(b.text); setSaved(b.saved); setReadErr(""); return; }
     let live = true;
     setText(""); setSaved(""); setReadErr("");
     if (open.abs && open.status !== "D") {
@@ -198,16 +215,41 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
     return m;
   }, [scm]);
 
+  /** Show `o` in its tab, opening one next to the current tab if needed. */
   const go = (o: Open, m: Mode) => {
-    const key = `${o.abs}|${o.rel}|${o.staged}`;
-    if (dirty && pending !== key) {
-      setPending(key);
-      setError(`Unsaved changes in ${base(open!.abs)} — Ctrl+S to save, or click again to discard them.`);
-      return;
+    setError("");
+    const k = tkey(o);
+    if (open && tkey(open) !== k) {
+      if (dirty) stash.current[tkey(open)] = { text, saved };
+      setTabs((ts) => ts.map((t) => (tkey(t) === tkey(open) ? { ...t, mode } : t)));
     }
-    setPending(""); setError("");
+    const tab = { ...o, mode: m };
+    setTabs((ts) => {
+      if (ts.some((t) => tkey(t) === k)) return ts.map((t) => (tkey(t) === k ? tab : t));
+      const at = open ? ts.findIndex((t) => tkey(t) === tkey(open)) + 1 : ts.length;
+      return [...ts.slice(0, at || ts.length), tab, ...ts.slice(at || ts.length)];
+    });
     setOpen(o);
     setMode(m);
+  };
+  /** Put `t` on screen without keeping the edits of the one leaving (they were discarded). */
+  const show = (t: Tab | undefined) => {
+    setText(""); setSaved("");
+    if (t) { setOpen(t); setMode(t.mode); } else setOpen(null);
+  };
+  const closeTab = async (t: Tab) => {
+    const k = tkey(t);
+    const on = !!open && tkey(open) === k;
+    if ((on && dirty) || stash.current[k]) {
+      const ok = await confirmDialog(`Discard the unsaved changes in ${base(t.abs)}?`,
+        { title: "Close", kind: "warning", okLabel: "Discard", cancelLabel: "Cancel" });
+      if (!ok) return;
+    }
+    delete stash.current[k];
+    const i = tabs.findIndex((x) => tkey(x) === k);
+    const rest = tabs.filter((x) => tkey(x) !== k);
+    setTabs(rest);
+    if (on) show(rest[Math.min(i, rest.length - 1)]);
   };
   const fromScm = (i: ScmItem, staged: boolean) =>
     go({ abs: i.abs, rel: i.path, staged, status: i.status },
@@ -215,10 +257,18 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
        i.status === "U" || i.status === "!" ? (isMd(i.path) && i.status === "U" ? "preview" : "edit") : "diff");
   const openFile = (i: ScmItem, staged: boolean) =>
     go({ abs: i.abs, rel: i.path, staged, status: i.status }, isMd(i.path) ? "preview" : "edit");
-  const fromTree = (e: Entry) => {
-    const i = scm?.changes.find((c) => c.abs === e.path) ?? scm?.staged.find((c) => c.abs === e.path);
-    go({ abs: e.path, rel: i?.path, staged: !!i && !scm?.changes.includes(i), status: i?.status },
-       isMd(e.path) ? "preview" : "edit");
+  const asOpen = (p: string): Open => {
+    const i = scm?.changes.find((c) => c.abs === p) ?? scm?.staged.find((c) => c.abs === p);
+    return { abs: p, rel: i?.path, staged: !!i && !scm?.changes.includes(i), status: i?.status };
+  };
+  const fromTree = (e: Entry) => go(asOpen(e.path), isMd(e.path) ? "preview" : "edit");
+  /** Files dropped on the editor: a tab each, the last one on screen. */
+  const openMany = (paths: string[]) => {
+    const news = paths.map((p) => ({ ...asOpen(p), mode: (isMd(p) ? "preview" : "edit") as Mode }));
+    const last = news.pop();
+    if (!last) return;
+    setTabs((ts) => [...ts, ...news.filter((n) => !ts.some((t) => tkey(t) === tkey(n)))]);
+    go(last, last.mode);
   };
 
   const toggle = (dir: string) => {
@@ -480,13 +530,27 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
     setKids((k) => Object.fromEntries(Object.entries(k).filter(([d]) => !under(d, p))));
     setSel((x) => (x && under(x.path, p) ? null : x));
   };
-  /** The open file is at or under `p` with edits in the box: say so, don't lose them. */
+  /** A tab at or under `p` has unsaved edits: say so, don't lose them. */
   const holds = (p: string) => {
-    if (!(open && under(open.abs, p) && dirty)) return false;
-    setError(`Unsaved changes in ${base(open.abs)} — save them first.`);
+    const f = open && under(open.abs, p) && dirty ? open.abs
+      : Object.keys(stash.current).map((k) => k.replace(/\|staged$/, "")).find((a) => under(a, p));
+    if (!f) return false;
+    setError(`Unsaved changes in ${base(f)} — save them first.`);
     return true;
   };
-  const close = () => { setOpen(null); setText(""); setSaved(""); };
+  /** Tabs follow a rename or move; git status catches up on the next poll. */
+  const moveTabs = (from: string, to: string) => {
+    const mv = (o: Open): Open => (under(o.abs, from) ? { abs: to + o.abs.slice(from.length) } : o);
+    setTabs((ts) => ts.map((t) => (under(t.abs, from) ? { ...mv(t), mode: t.mode === "diff" ? "edit" : t.mode } : t)));
+    if (open && under(open.abs, from)) { setOpen(mv(open)); if (mode === "diff") setMode("edit"); }
+  };
+  /** Tabs of deleted files close, edits and all. */
+  const dropTabs = (p: string) => {
+    for (const k of Object.keys(stash.current)) if (under(k.replace(/\|staged$/, ""), p)) delete stash.current[k];
+    const rest = tabs.filter((t) => !under(t.abs, p));
+    setTabs(rest);
+    if (open && under(open.abs, p)) show(rest[rest.length - 1]);
+  };
   const folderOf = (e: Entry | null) => (!e ? root : e.dir ? e.path : parent(e.path));
 
   const newItem = async (e: Entry | null, folder: boolean) => {
@@ -509,7 +573,7 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
       await api.fsOp(root, "rename", e.path, to);
       forget(e.path);
       reload(parent(e.path), parent(to));
-      if (open && under(open.abs, e.path)) setOpen({ abs: to + open.abs.slice(e.path.length) });
+      moveTabs(e.path, to);
     });
   };
   const deleteItem = async (e: Entry) => {
@@ -520,7 +584,7 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
       await api.fsOp(root, "delete", e.path);
       forget(e.path);
       reload(parent(e.path));
-      if (open && under(open.abs, e.path)) close();
+      dropTabs(e.path);
       if (clip && under(clip.path, e.path)) setClip(null);
     });
   };
@@ -535,7 +599,7 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
         await api.fsOp(root, "rename", clip.path, to);
         forget(clip.path);
         reload(parent(clip.path), dir);
-        if (open && under(open.abs, clip.path)) setOpen({ abs: to + open.abs.slice(clip.path.length) });
+        moveTabs(clip.path, to);
         setClip(null);
       });
     } else {
@@ -583,14 +647,56 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
     if (f[k]) { ev.preventDefault(); f[k](); }
   };
 
+  // Ctrl+N: new file where the selection is. Ctrl+W: close the tab. Not while
+  // typing in a terminal, where both keys belong to the shell.
+  const keys = useRef({ newFile: () => {}, closeTab: () => {} });
+  keys.current = { newFile: () => void newItem(sel, false), closeTab: () => { const t = tabs.find((x) => open && tkey(x) === tkey(open)); if (t) void closeTab(t); } };
+  useEffect(() => {
+    const f = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || (e.target as HTMLElement)?.closest?.(".xterm")) return;
+      const k = e.key.toLowerCase();
+      if (k === "n") { e.preventDefault(); keys.current.newFile(); }
+      if (k === "w") { e.preventDefault(); keys.current.closeTab(); }
+    };
+    window.addEventListener("keydown", f);
+    return () => window.removeEventListener("keydown", f);
+  }, []);
+
+  /** The tree's rows in screen order, for Shift+click ranges and drags. */
+  const visible = (dir = root): Entry[] => (kids[dir] ?? []).flatMap((e) => [e, ...(e.dir && kids[e.path] ? visible(e.path) : [])]);
+  const pick = (ev: React.MouseEvent, e: Entry) => {
+    setSel(e);
+    if (ev.ctrlKey || ev.metaKey) {
+      anchor.current = e.path;
+      setPicked((p) => { const n = new Set(p); if (n.has(e.path)) n.delete(e.path); else n.add(e.path); return n; });
+      return;
+    }
+    const v = visible();
+    const a = v.findIndex((x) => x.path === anchor.current);
+    const b = v.findIndex((x) => x.path === e.path);
+    if (ev.shiftKey && a >= 0 && b >= 0) return setPicked(new Set(v.slice(Math.min(a, b), Math.max(a, b) + 1).map((x) => x.path)));
+    anchor.current = e.path;
+    setPicked(new Set([e.path]));
+    if (e.dir) toggle(e.path); else fromTree(e);
+  };
+  const dragStart = (ev: React.DragEvent, e: Entry) => {
+    const set = picked.has(e.path) ? picked : new Set([e.path]);
+    if (!picked.has(e.path)) setPicked(set);
+    const files = visible().filter((x) => set.has(x.path) && !x.dir).map((x) => x.path);
+    if (!files.length) return ev.preventDefault();
+    ev.dataTransfer.setData(DRAG, JSON.stringify(files));
+    ev.dataTransfer.effectAllowed = "copy";
+  };
+
   const ignored = useMemo(() => new Set(scm?.ignored ?? []), [scm]);
   /** `dim`: the folder being listed is git-ignored, so all of it is. */
   const tree = (dir: string, depth: number, dim = false): React.ReactNode =>
     kids[dir]?.map((e) => { const ig = dim || ignored.has(e.path); return (
       <div key={e.path}>
-        <button className={"frow" + (open?.abs === e.path ? " on" : "") + (clip?.cut && clip.path === e.path ? " cut" : "") + (ig ? " ign" : "")}
-                style={{ paddingLeft: 7 + depth * 12 }} title={e.path}
-                onClick={() => { setSel(e); if (e.dir) toggle(e.path); else fromTree(e); }}
+        <button className={"frow" + (open?.abs === e.path ? " on" : "") + (picked.has(e.path) && picked.size > 1 ? " sel" : "")
+                           + (clip?.cut && clip.path === e.path ? " cut" : "") + (ig ? " ign" : "")}
+                style={{ paddingLeft: 7 + depth * 12 }} title={e.path} draggable
+                onClick={(ev) => pick(ev, e)} onDragStart={(ev) => dragStart(ev, e)}
                 onContextMenu={(ev) => { ev.preventDefault(); ev.stopPropagation(); setSel(e); setCtx({ x: ev.clientX, y: ev.clientY, e }); }}>
           <span className="tw">{e.dir && <Chev open={!!kids[e.path]} />}</span>
           <Ico k={e.dir ? folderIcon(T, e.name, !!kids[e.path]) : fileIcon(T, e.name)} />
@@ -749,8 +855,35 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
           </div>
         </div>
 
-        <div className="pane-ed">
-          {!open && <div className="hint">Open a file from the tree, or a change to review its diff.</div>}
+        <div className={"pane-ed" + (dropping ? " drop" : "")}
+             onDragOver={(ev) => { if (!ev.dataTransfer.types.includes(DRAG)) return; ev.preventDefault(); ev.dataTransfer.dropEffect = "copy"; setDropping(true); }}
+             onDragLeave={(ev) => { if (!ev.currentTarget.contains(ev.relatedTarget as Node)) setDropping(false); }}
+             onDrop={(ev) => {
+               setDropping(false);
+               const raw = ev.dataTransfer.getData(DRAG);
+               if (!raw) return;
+               ev.preventDefault();
+               openMany(JSON.parse(raw) as string[]);
+             }}>
+          {tabs.length > 0 && (
+            <div className="tabs-bar">
+              {tabs.map((t) => {
+                const k = tkey(t), on = !!open && tkey(open) === k, d = (on && dirty) || !!stash.current[k];
+                return (
+                  <div key={k} className={"etab" + (on ? " on" : "")} title={t.abs || t.rel}
+                       onClick={() => !on && go(t, t.mode)}
+                       onMouseDown={(ev) => { if (ev.button === 1) { ev.preventDefault(); void closeTab(t); } }}>
+                    <Ico k={fileIcon(T, base(t.abs || t.rel || ""))} />
+                    <span>{base(t.abs || t.rel || "")}</span>
+                    {(on ? mode : t.mode) === "diff" && <span className="k">{t.staged ? "Index" : "Working Tree"}</span>}
+                    <button className={"x" + (d ? " dirty" : "")} title={d ? "Unsaved — close" : "Close (Ctrl+W)"}
+                            onClick={(ev) => { ev.stopPropagation(); void closeTab(t); }}>{d ? "●" : "×"}</button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {!open && <div className="hint">Open a file from the tree, or drag files here — Ctrl/Shift+click to pick several.</div>}
           {open && (
             <>
               <div className="ed-head">
