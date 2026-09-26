@@ -87,6 +87,116 @@ pub fn write(root: &str, path: &str, content: &str) -> Result<(), String> {
     std::fs::write(&p, content).map_err(|e| e.to_string())
 }
 
+/// The Explorer's right-click menu: New File/Folder, Rename, Delete, Paste.
+/// Every path goes through `inside`, and the workspace folder itself can be
+/// neither renamed, deleted, nor copied into itself.
+pub fn create(root: &str, path: &str, dir: bool) -> Result<(), String> {
+    let p = inside(root, path)?;
+    if p.exists() {
+        return Err(format!("{} already exists", p.display()));
+    }
+    // "a/b.ts" makes the folder too, like VS Code.
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    if dir {
+        std::fs::create_dir(&p)
+    } else {
+        std::fs::OpenOptions::new().write(true).create_new(true).open(&p).map(|_| ())
+    }
+    .map_err(|e| e.to_string())
+}
+
+fn not_root(root: &str, p: &Path) -> Result<(), String> {
+    if lexical(Path::new(root)) == *p {
+        return Err("Refused: that is the workspace folder itself".into());
+    }
+    Ok(())
+}
+
+/// Rename or move (Cut + Paste). Never overwrites.
+pub fn rename(root: &str, from: &str, to: &str) -> Result<(), String> {
+    let (f, t) = (inside(root, from)?, inside(root, to)?);
+    not_root(root, &f)?;
+    if t.starts_with(&f) && t != f {
+        return Err("Cannot move a folder into itself".into());
+    }
+    if t.exists() && t != f {
+        return Err(format!("{} already exists", t.display()));
+    }
+    std::fs::rename(&f, &t).map_err(|e| e.to_string())
+}
+
+/// Delete Permanently — no bin. The frontend asks first.
+pub fn remove(root: &str, path: &str) -> Result<(), String> {
+    let p = inside(root, path)?;
+    not_root(root, &p)?;
+    // symlink_metadata: a link to a folder is removed as a link, not followed.
+    if std::fs::symlink_metadata(&p).map_err(|e| e.to_string())?.is_dir() {
+        std::fs::remove_dir_all(&p)
+    } else {
+        std::fs::remove_file(&p)
+    }
+    .map_err(|e| e.to_string())
+}
+
+/// `x.ts` → `x copy.ts` → `x copy 2.ts`, VS Code's names for a pasted copy.
+fn free_name(p: &Path) -> PathBuf {
+    if !p.exists() {
+        return p.to_path_buf();
+    }
+    let stem = p.file_stem().unwrap_or_default().to_string_lossy();
+    let ext = p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    (1..)
+        .map(|n| p.with_file_name(if n == 1 { format!("{stem} copy{ext}") } else { format!("{stem} copy {n}{ext}") }))
+        .find(|c| !c.exists())
+        .unwrap()
+}
+
+fn copy_all(from: &Path, to: &Path) -> std::io::Result<()> {
+    if from.is_dir() {
+        std::fs::create_dir(to)?;
+        for e in std::fs::read_dir(from)? {
+            let e = e?;
+            copy_all(&e.path(), &to.join(e.file_name()))?;
+        }
+        Ok(())
+    } else {
+        std::fs::copy(from, to).map(|_| ())
+    }
+}
+
+/// Copy + Paste into `dir`. Returns where the copy landed.
+pub fn copy(root: &str, from: &str, dir: &str) -> Result<String, String> {
+    let (f, d) = (inside(root, from)?, inside(root, dir)?);
+    if d.starts_with(&f) {
+        return Err("Cannot paste a folder into itself".into());
+    }
+    let t = free_name(&d.join(f.file_name().ok_or("Nothing to copy")?));
+    copy_all(&f, &t).map_err(|e| e.to_string())?;
+    Ok(t.to_string_lossy().into_owned())
+}
+
+/// Reveal in File Explorer: the OS file manager, with the item selected where
+/// the OS can do that.
+pub fn reveal(root: &str, path: &str) -> Result<(), String> {
+    let p = inside(root, path)?;
+    // raw_arg: explorer wants `/select,"C:\a b"`, which Rust's own quoting breaks.
+    #[cfg(windows)]
+    let r = std::os::windows::process::CommandExt::raw_arg(
+        &mut std::process::Command::new("explorer.exe"),
+        format!("/select,\"{}\"", p.display()),
+    )
+    .spawn();
+    #[cfg(target_os = "macos")]
+    let r = std::process::Command::new("open").arg("-R").arg(&p).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let r = std::process::Command::new("xdg-open")
+        .arg(if p.is_dir() { p.as_path() } else { p.parent().unwrap_or(&p) })
+        .spawn();
+    r.map(|_| ()).map_err(|e| e.to_string())
+}
+
 #[derive(Serialize)]
 pub struct Item {
     /// Relative to the repo top, as git names it — what every git call takes.
@@ -112,6 +222,9 @@ pub struct Status {
     pub merge: Vec<Item>,
     pub staged: Vec<Item>,
     pub changes: Vec<Item>,
+    /// On-disk paths git ignores, a folder once (not its contents) — the
+    /// Explorer dims them and everything under them, like VS Code.
+    pub ignored: Vec<String>,
 }
 
 type Pairs = Vec<(String, String)>;
@@ -125,6 +238,7 @@ pub struct Parsed {
     pub merge: Pairs,
     pub staged: Pairs,
     pub changes: Pairs,
+    pub ignored: Vec<String>,
 }
 
 /// `git status --porcelain -b -z` split into the lists VS Code shows. A file
@@ -159,6 +273,10 @@ pub fn parse_status(raw: &str) -> Parsed {
             p.merge.push(("!".into(), path));
             continue;
         }
+        if x == "!" {
+            p.ignored.push(path.trim_end_matches('/').to_string());
+            continue;
+        }
         if x == "?" {
             p.changes.push(("U".into(), path));
             continue;
@@ -177,21 +295,21 @@ pub fn status(runtime: &str, root: &str) -> Result<Status, String> {
     let Ok(prefix) = git(runtime, root, &["rev-parse", "--show-prefix"]) else {
         return Ok(Status {
             is_repo: false, branch: String::new(), upstream: false, ahead: 0, behind: 0,
-            merge: vec![], staged: vec![], changes: vec![],
+            merge: vec![], staged: vec![], changes: vec![], ignored: vec![],
         });
     };
-    let raw = git(runtime, root, &["status", "--porcelain", "-b", "-z", "--untracked-files=all"])?;
+    // `matching`: an ignored folder is one line, git does not walk into it.
+    let raw = git(runtime, root, &["status", "--porcelain", "-b", "-z", "--untracked-files=all", "--ignored=matching"])?;
     let p = parse_status(&raw);
+    // Joined a component at a time, so on Windows it is `\\` all the way and
+    // equals the path `list` reports for the same file.
+    let abs = |path: &str| {
+        path.strip_prefix(prefix.as_str())
+            .map(|rel| rel.split('/').fold(PathBuf::from(root), |p, c| p.join(c)).to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
     let items = |v: Pairs| -> Vec<Item> {
-        v.into_iter()
-            .map(|(status, path)| {
-                let abs = path
-                    .strip_prefix(prefix.as_str())
-                    .map(|rel| Path::new(root).join(rel).to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                Item { path, abs, status }
-            })
-            .collect()
+        v.into_iter().map(|(status, path)| Item { abs: abs(&path), path, status }).collect()
     };
     Ok(Status {
         is_repo: true,
@@ -202,6 +320,7 @@ pub fn status(runtime: &str, root: &str) -> Result<Status, String> {
         merge: items(p.merge),
         staged: items(p.staged),
         changes: items(p.changes),
+        ignored: p.ignored.iter().map(|x| abs(x)).filter(|x| !x.is_empty()).collect(),
     })
 }
 
@@ -222,14 +341,15 @@ pub fn diff(runtime: &str, root: &str, file: &str, staged: bool) -> Result<Strin
     git(runtime, root, &a)
 }
 
-/// The file as HEAD has it, for the editor's change bars. `None` when HEAD has
+/// The file as HEAD has it (`index`: as staged), for the change bars and the
+/// diff editor's left side. `None` when HEAD has
 /// no such file (new, untracked, ignored, or no commits yet) — the frontend
 /// decides which of those means "all added".
 ///
 /// ponytail: `git()` trims trailing whitespace, so a final newline is lost; the
 /// editor puts it back when the working file has one.
-pub fn original(runtime: &str, root: &str, file: &str) -> Option<String> {
-    git(runtime, root, &["show", &format!("HEAD:{file}")]).ok()
+pub fn original(runtime: &str, root: &str, file: &str, index: bool) -> Option<String> {
+    git(runtime, root, &["show", &format!("{}:{file}", if index { "" } else { "HEAD" })]).ok()
 }
 
 /// ponytail: unstaging is `git restore --staged`, which needs a first commit
@@ -403,12 +523,13 @@ mod tests {
 
     #[test]
     fn status_splits_into_staged_and_changes() {
-        let raw = "## master...origin/master [ahead 2, behind 1]\0M  a.ts\0 M b.ts\0MM c.ts\0?? new file.md\0R  to.ts\0from.ts\0 D gone.rs\0UU clash.ts\0";
+        let raw = "## master...origin/master [ahead 2, behind 1]\0M  a.ts\0 M b.ts\0MM c.ts\0?? new file.md\0R  to.ts\0from.ts\0 D gone.rs\0UU clash.ts\0!! target/\0";
         let p = parse_status(raw);
         let v = |a: &[(&str, &str)]| a.iter().map(|(x, y)| (x.to_string(), y.to_string())).collect::<Vec<_>>();
         assert_eq!(p.staged, v(&[("M", "a.ts"), ("M", "c.ts"), ("R", "to.ts")]));
         assert_eq!(p.changes, v(&[("M", "b.ts"), ("M", "c.ts"), ("U", "new file.md"), ("D", "gone.rs")]));
         assert_eq!(p.merge, v(&[("!", "clash.ts")]));
+        assert_eq!(p.ignored, vec!["target".to_string()]);
         assert_eq!((p.branch.as_str(), p.upstream, p.ahead, p.behind), ("master", true, 2, 1));
     }
 
@@ -495,6 +616,36 @@ mod tests {
         assert!(stash_ref(s("stash@{2}").as_ref()).is_ok());
         assert!(stash_ref(s("stash@{x}").as_ref()).is_err());
         assert!(op("host", "/", "rm-rf", &[]).is_err());
+    }
+
+    /// The right-click menu's file operations on a real folder.
+    #[test]
+    fn file_ops() {
+        let d = std::env::temp_dir().join(format!("as-fsops-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let r = d.to_string_lossy().to_string();
+        let p = |s: &str| d.join(s).to_string_lossy().to_string();
+
+        create(&r, &p("sub/a.ts"), false).unwrap();
+        assert!(create(&r, &p("sub/a.ts"), false).is_err(), "never overwrites");
+        create(&r, &p("dir"), true).unwrap();
+        assert!(copy(&r, &p("sub/a.ts"), &p("sub")).unwrap().ends_with("a copy.ts"));
+        assert!(copy(&r, &p("sub/a.ts"), &p("sub")).unwrap().ends_with("a copy 2.ts"));
+        copy(&r, &p("sub"), &p("dir")).unwrap();
+        assert!(d.join("dir/sub/a copy.ts").exists(), "folders copy whole");
+        assert!(copy(&r, &p("dir"), &p("dir/sub")).is_err());
+
+        rename(&r, &p("sub/a.ts"), &p("dir/b.ts")).unwrap();
+        assert!(d.join("dir/b.ts").exists() && !d.join("sub/a.ts").exists());
+        assert!(rename(&r, &p("dir/b.ts"), &p("sub/a copy.ts")).is_err(), "never overwrites");
+        assert!(rename(&r, &p("dir"), &p("dir/sub/x")).is_err());
+
+        remove(&r, &p("dir")).unwrap();
+        assert!(!d.join("dir").exists());
+        assert!(remove(&r, &r).is_err() && rename(&r, &r, &p("x")).is_err(), "the workspace itself is off limits");
+        assert!(remove(&r, &format!("{r}/../x")).is_err());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

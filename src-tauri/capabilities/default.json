@@ -2,6 +2,16 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Agentspace main window",
-  "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open", "dialog:allow-confirm", "notification:default", "core:window:allow-request-user-attention"]
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "dialog:allow-confirm",
+    "notification:default",
+    "core:window:allow-request-user-attention",
+    "updater:default",
+    "process:allow-restart"
+  ]
 }

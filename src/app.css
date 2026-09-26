@@ -213,8 +213,11 @@ input { font: inherit; color: inherit; }
 .pane.focus .ph { background: var(--raise); }
 .pane .ph .nm { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pane .ph .sp { flex: 1; }
-.pane .term { flex: 1; min-height: 0; padding: 6px 0 4px 11px; }
-.pane .term .xterm { height: 100%; }
+.pane .term { flex: 1; min-height: 0; }
+/* Padding on .xterm, never on .term: FitAddon subtracts .xterm's padding but
+   reads the parent's border-box width, so padding there sized the text 11px
+   too wide and it covered the scrollbar (I-beam cursor, no dragging). */
+.pane .term .xterm { height: 100%; padding: 6px 0 4px 11px; }
 
 .chip {
   display: inline-flex; align-items: center; gap: 5px; padding: 1px 7px; border-radius: 20px;
@@ -738,7 +741,7 @@ table.plain td.mono { font-family: var(--mono); }
 .explorer .scm-row .t.gone { text-decoration: line-through; opacity: .75; }
 .explorer .scm-row .dir { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--faint); font-size: 11.5px; }
 .explorer .scm-row .sp { flex: 1; }
-.explorer .scm-row .tw, .explorer .sec .tw { flex: none; width: 10px; color: var(--faint); font-size: 10px; }
+.explorer .scm-row .tw, .explorer .sec .tw { flex: none; width: 16px; height: 16px; color: var(--dim); }
 .explorer .scm-row.folder .t { color: var(--dim); }
 .explorer .acts { display: none; gap: 1px; }
 .explorer .scm-row:hover .acts, .explorer .scm-row.on .acts, .explorer .sec:hover .acts { display: flex; }
@@ -748,7 +751,11 @@ table.plain td.mono { font-family: var(--mono); }
 .explorer .st.s\! { color: var(--danger); }
 .explorer .st.sD, .explorer .t.sD { color: var(--danger); }
 .explorer .st.sR { color: var(--ok); }
-.explorer .frow .tw { flex: none; width: 10px; color: var(--faint); font-size: 10px; }
+.explorer .frow .tw { flex: none; width: 16px; height: 16px; color: var(--dim); }
+.explorer .chev { display: block; width: 16px; height: 16px; transition: transform .1s; }
+.explorer .chev.open { transform: rotate(90deg); }
+/* VS Code's gitDecoration.ignoredResourceForeground: faded, name and icon. */
+.explorer .frow.ign .t, .explorer .frow.ign .fi { opacity: .45; }
 .explorer .frow .t { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .explorer .frow .t.sM { color: var(--warn); }
 .explorer .frow .t.sA, .explorer .frow .t.sU { color: var(--ok); }
@@ -773,22 +780,6 @@ table.plain td.mono { font-family: var(--mono); }
 .md table { border-collapse: collapse; }
 .md th, .md td { border: 1px solid var(--line); padding: 4px 10px; }
 .md img { max-width: 100%; }
-/* Old | New (class .sbs — .split is taken by the config view's grid): four columns — line number and text for each side. Lines wrap
-   rather than scroll, so the two sides can never drift out of step. */
-.review .diff.sbs .sl { display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px minmax(0, 1fr); }
-.review .diff.sbs .sl .tx { white-space: pre-wrap; word-break: break-all; padding: 0 10px 0 4px; }
-.review .diff.sbs .sl .tx:nth-child(2) { border-right: 1px solid var(--line); }
-.review .diff.sbs .sl .tx.del { background: var(--err-bg); color: var(--err-fg); }
-.review .diff.sbs .sl .tx.add { background: var(--done-bg); color: var(--done-fg); }
-.review .diff.sbs .sl .tx.none { background: repeating-linear-gradient(135deg, transparent 0 5px, var(--line-soft) 5px 6px); }
-.review .diff.sbs .sl.head {
-  position: sticky; top: 0; z-index: 1; grid-template-columns: 1fr 1fr; background: var(--panel);
-  border-bottom: 1px solid var(--line); font-family: inherit; font-size: 11px; color: var(--faint);
-}
-.review .diff.sbs .sl.head span { padding: 5px 12px; }
-.review .diff.sbs .sl.head span:first-child { border-right: 1px solid var(--line); }
-.review .diff.sbs .sl .ln { text-align: right; padding-right: 8px; color: var(--faint); user-select: none; font-size: 11px; }
-
 /* Terminal dạt sang phải khi Explorer mở. */
 .main > .view.dock { flex: none; min-width: 0; order: 2; border-left: 1px solid var(--line); position: relative; }
 .main > .view:not(.dock) { min-width: 0; }
@@ -805,6 +796,8 @@ table.plain td.mono { font-family: var(--mono); }
 /* Material Icon Theme icons: 16px like VS Code's explorer. */
 .fi { flex: none; width: 16px; height: 16px; }
 .explorer .frow { gap: 5px; }
+.explorer .frow.cut { opacity: .5; }
+.explorer .ftree { min-height: 120px; }
 /* CodeMirror editor: fills the pane; change bars like VS Code's gutter. */
 .code-ed { flex: 1; min-height: 0; overflow: hidden; }
 .code-ed .cm-editor { height: 100%; font-size: 13px; }
@@ -826,6 +819,7 @@ table.plain td.mono { font-family: var(--mono); }
 .ctx-menu .mi.off { color: var(--faint); cursor: default; }
 .ctx-menu .mi.off:hover { background: none; color: var(--faint); }
 .ctx-menu .mi .arr { margin-left: auto; }
+.ctx-menu .mi .key { margin-left: auto; padding-left: 28px; opacity: .6; font-size: 11.5px; }
 .ctx-menu .sep { height: 1px; background: var(--line); margin: 5px 6px; }
 
 /* Quick pick: top-centre box with a filter and a list. */
@@ -853,3 +847,29 @@ table.plain td.mono { font-family: var(--mono); }
 .git-out > div { padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
 .git-out > div.bad b { color: var(--danger); }
 .git-out pre { margin: 4px 0 0; white-space: pre-wrap; font-family: var(--mono); color: var(--dim); }
+
+/* Diff tab: VS Code's diff editor colours — a tinted line, the changed words
+   in it a shade darker, hatched filler where the other side has lines. */
+.diff-ed { flex: 1; min-height: 0; overflow: hidden; display: flex; }
+.diff-host { flex: 1; min-width: 0; display: flex; }
+.diff-host > .cm-editor, .diff-host > .cm-mergeView { flex: 1; min-width: 0; height: 100%; font-size: 13px; }
+/* VS Code's overview ruler: where the changes are in the whole file. */
+.diff-ed .ruler { flex: none; width: 14px; position: relative; background: #1e1e1e; border-left: 1px solid var(--line); cursor: default; }
+.diff-ed .ruler .port { position: absolute; left: 0; right: 0; background: rgba(121, 121, 121, .2); pointer-events: none; }
+.diff-ed .ruler:hover .port { background: rgba(100, 100, 100, .35); }
+.diff-ed .ruler .rm { position: absolute; width: 5px; min-height: 2px; pointer-events: none; }
+.diff-ed .ruler .rm.a { left: 1px; background: #f85149; }
+.diff-ed .ruler .rm.b { right: 1px; background: #2ea043; }
+.diff-ed .cm-mergeView { overflow-y: auto; }
+.diff-ed .cm-scroller { font-family: var(--mono); line-height: 1.55; }
+.diff-ed .cm-mergeViewEditor + .cm-mergeViewEditor, .diff-ed .cm-merge-revert + .cm-mergeViewEditor { border-left: 1px solid var(--line); }
+.diff-ed .cm-merge-a .cm-changedLine, .diff-ed .cm-deletedChunk { background: rgba(255, 0, 0, .2) !important; }
+.diff-ed .cm-merge-b .cm-changedLine, .diff-ed .cm-inlineChangedLine { background: rgba(155, 185, 85, .2) !important; }
+.diff-ed .cm-merge-a .cm-changedText, .diff-ed .cm-deletedChunk .cm-deletedText { background: rgba(255, 0, 0, .25) !important; }
+.diff-ed .cm-merge-b .cm-changedText, .diff-ed .cm-insertedLine .cm-changedText { background: rgba(156, 204, 44, .25) !important; }
+.diff-ed .cm-deletedChunk del { text-decoration: none; }
+.diff-ed .cm-merge-a .cm-changedLineGutter, .diff-ed .cm-deletedLineGutter { background: #f85149 !important; }
+.diff-ed .cm-merge-b .cm-changedLineGutter { background: #2ea043 !important; }
+.diff-ed .cm-mergeSpacer { background: repeating-linear-gradient(-45deg, transparent 0 6px, rgba(204, 204, 204, .12) 6px 7px); }
+.diff-ed .cm-merge-revert { background: #1e1e1e; border-left: 1px solid var(--line); }
+.diff-ed .cm-merge-revert button { color: #ccc; cursor: pointer; }

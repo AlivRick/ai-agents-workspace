@@ -635,6 +635,24 @@ async fn fs_write(root: String, path: String, content: String) -> Result<(), Str
     blocking(move || explorer::write(&root, &path, &content)).await?
 }
 
+/// The Explorer's right-click menu. `op`: "file", "folder", "rename",
+/// "delete", "copy" (into folder `to`) or "reveal". Returns the new path.
+#[tauri::command]
+async fn fs_op(root: String, op: String, path: String, to: Option<String>) -> Result<String, String> {
+    blocking(move || {
+        let to = to.unwrap_or_default();
+        match op.as_str() {
+            "file" | "folder" => explorer::create(&root, &path, op == "folder").map(|_| path),
+            "rename" => explorer::rename(&root, &path, &to).map(|_| to),
+            "delete" => explorer::remove(&root, &path).map(|_| path),
+            "copy" => explorer::copy(&root, &path, &to),
+            "reveal" => explorer::reveal(&root, &path).map(|_| path),
+            _ => Err(format!("unknown op {op}")),
+        }
+    })
+    .await?
+}
+
 #[tauri::command]
 async fn scm_status(root: String, runtime: Option<String>) -> Result<explorer::Status, String> {
     let r = rt(runtime);
@@ -670,9 +688,9 @@ async fn scm_op(root: String, op: String, args: Vec<String>, runtime: Option<Str
 }
 
 #[tauri::command]
-async fn scm_original(root: String, file: String, runtime: Option<String>) -> Result<Option<String>, String> {
+async fn scm_original(root: String, file: String, index: Option<bool>, runtime: Option<String>) -> Result<Option<String>, String> {
     let r = rt(runtime);
-    blocking(move || explorer::original(&r, &root, &file)).await
+    blocking(move || explorer::original(&r, &root, &file, index.unwrap_or(false))).await
 }
 
 #[tauri::command]
@@ -753,6 +771,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(term::Terminals::default())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
@@ -801,6 +821,7 @@ pub fn run() {
             fs_list,
             fs_read,
             fs_write,
+            fs_op,
             scm_status,
             scm_diff,
             scm_stage,

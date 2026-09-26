@@ -1,7 +1,7 @@
 {
   "name": "agentspace",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.3",
   "type": "module",
   "scripts": {
     "dev": "node scripts/icons.mjs && vite",
@@ -13,7 +13,8 @@
     "check:task": "node --experimental-strip-types src/task.check.ts",
     "check:agents": "node --experimental-strip-types src/agents.check.ts",
     "check:diff": "node --experimental-strip-types src/diff.check.ts",
-    "release:win": "npm run tauri build -- --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis && bash scripts/ship-win.sh",
+    "release:win": "TAURI_SIGNING_PRIVATE_KEY=\"$(cat ${AGENTSPACE_KEY:-$HOME/.tauri/agentspace.key})\" TAURI_SIGNING_PRIVATE_KEY_PASSWORD= npm run tauri build -- --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis && bash scripts/ship-win.sh",
+    "publish:win": "bash scripts/publish-win.sh",
     "check:zoom": "node --experimental-strip-types src/zoom.check.ts",
     "check:setup": "node --experimental-strip-types src/setup.check.ts",
     "check:writeq": "node --experimental-strip-types src/writeq.check.ts",
@@ -32,6 +33,8 @@
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/plugin-notification": "^2.4.0",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.12.0",
     "@uiw/codemirror-theme-vscode": "^4.25.12",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-search": "^0.16.0",

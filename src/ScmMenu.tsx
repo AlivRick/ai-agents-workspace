@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 /** A menu entry: an action, a submenu, or a separator ("-"). */
-export type Item = "-" | { label: string; run?: () => void; sub?: Item[]; disabled?: boolean };
+export type Item = "-" | { label: string; run?: () => void; sub?: Item[]; disabled?: boolean; key?: string };
 
 /**
  * VS Code's "…" menu in Source Control: one column, submenus open on hover to
@@ -11,14 +11,22 @@ export function Menu({ items, x, y, onClose }: { items: Item[]; x: number; y: nu
   return (
     <>
       <div className="icon-back" onClick={onClose} />
-      <List items={items} style={{ left: x, top: y }} onClose={onClose} />
+      <List items={items} style={{ left: x, top: y }} onClose={onClose} fit />
     </>
   );
 }
 
-function List({ items, style, onClose }: { items: Item[]; style: React.CSSProperties; onClose: () => void }) {
+function List({ items, style, onClose, fit }: { items: Item[]; style: React.CSSProperties; onClose: () => void; fit?: boolean }) {
   const [sub, setSub] = useState<number | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  // A right-click near the bottom or right edge: pull the menu back on screen.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!fit || !el) return;
+    const r = el.getBoundingClientRect();
+    if (r.bottom > innerHeight) el.style.top = `${Math.max(4, innerHeight - r.height - 4)}px`;
+    if (r.right > innerWidth) el.style.left = `${Math.max(4, innerWidth - r.width - 4)}px`;
+  }, [fit]);
   // A submenu opens to the right of its row; flip left when the window ends.
   const subLeft = (ref.current?.getBoundingClientRect().right ?? 0) + 220 > window.innerWidth;
   return (
@@ -31,6 +39,7 @@ function List({ items, style, onClose }: { items: Item[]; style: React.CSSProper
                onMouseEnter={() => setSub(it.sub ? i : null)}
                onClick={() => { if (it.disabled || it.sub) return; onClose(); it.run?.(); }}>
             <span>{it.label}</span>
+            {it.key && <span className="key">{it.key}</span>}
             {it.sub && <span className="arr">›</span>}
             {it.sub && sub === i && (
               <List items={it.sub} onClose={onClose}
@@ -47,6 +56,9 @@ export type PickerAsk = {
   title: string; placeholder?: string; items?: Pick[];
   /** Accept whatever was typed when it matches no item — for names. */
   free?: boolean;
+  /** Starting text, e.g. the old name for Rename; the part before the
+   *  extension comes up selected. */
+  value?: string;
   resolve: (v: string | null) => void;
 };
 
@@ -55,7 +67,7 @@ export type PickerAsk = {
  * input box, when there are no items and `free` is set.
  */
 export function Picker({ ask }: { ask: PickerAsk }) {
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(ask.value ?? "");
   const [at, setAt] = useState(0);
   const items = (ask.items ?? []).filter((p) =>
     `${p.label} ${p.description ?? ""} ${p.detail ?? ""}`.toLowerCase().includes(q.trim().toLowerCase()));
@@ -70,6 +82,7 @@ export function Picker({ ask }: { ask: PickerAsk }) {
       <div className="picker" onMouseDown={(e) => e.stopPropagation()}>
         <div className="pt">{ask.title}</div>
         <input autoFocus value={q} placeholder={ask.placeholder} onChange={(e) => setQ(e.target.value)}
+               onFocus={(e) => { const d = q.lastIndexOf("."); e.target.setSelectionRange(0, d > 0 ? d : q.length); }}
                onKeyDown={(e) => {
                  if (e.key === "Escape") done(null);
                  else if (e.key === "Enter") { e.preventDefault(); enter(); }

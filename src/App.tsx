@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { UpdateBanner } from "./Updater";
 import { open as pickFolder, confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
@@ -822,6 +823,7 @@ export default function App() {
 
   return (
     <div className="app">
+      <UpdateBanner />
       {notice && (
         <div className="banner err">
           <span>{notice}</span>

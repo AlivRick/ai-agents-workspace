@@ -1,4 +1,5 @@
 import { THEMES, type Theme } from "./themes";
+import { UpdateCard } from "./Updater";
 
 /** Grouped theme picker. Each row previews the palette it applies, so the
  *  choice is made by looking rather than by reading names. */
@@ -29,6 +30,7 @@ export default function SettingsView({
               <button className="btn ghost" onClick={() => onZoom(0)} disabled={zoom === 1}>Reset</button>
             </div>
           </div>
+          <UpdateCard />
           <div className="card">
             <h3>Sessions</h3>
             <div className="sub">takes effect the next time you open the app</div>

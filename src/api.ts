@@ -80,6 +80,8 @@ export type ScmItem = { path: string; abs: string; status: string };
 export type ScmStatus = {
   isRepo: boolean; branch: string; upstream: boolean; ahead: number; behind: number;
   merge: ScmItem[]; staged: ScmItem[]; changes: ScmItem[];
+  /** Ignored paths on disk; a folder stands for everything under it. */
+  ignored: string[];
 };
 
 export type Runtime = { id: string; label: string; kind: string; distro: string; shell: string };
@@ -154,6 +156,8 @@ export const api = {
   fsList: (root: string, dir: string) => invoke<Entry[]>("fs_list", { root, dir }),
   fsRead: (root: string, path: string) => invoke<string>("fs_read", { root, path }),
   fsWrite: (root: string, path: string, content: string) => invoke<void>("fs_write", { root, path, content }),
+  fsOp: (root: string, op: "file" | "folder" | "rename" | "delete" | "copy" | "reveal", path: string, to?: string) =>
+    invoke<string>("fs_op", { root, op, path, to }),
   scmStatus: (root: string, runtime?: string) => invoke<ScmStatus>("scm_status", { root, runtime }),
   scmDiff: (root: string, file: string, staged: boolean, runtime?: string) =>
     invoke<string>("scm_diff", { root, file, staged, runtime }),
@@ -164,8 +168,9 @@ export const api = {
   /** One entry of the Source Control "…" menu, by name (see explorer::op). */
   scmOp: (root: string, op: string, args: string[] = [], runtime?: string) =>
     invoke<string>("scm_op", { root, op, args, runtime }),
-  scmOriginal: (root: string, file: string, runtime?: string) =>
-    invoke<string | null>("scm_original", { root, file, runtime }),
+  /** HEAD's copy, or the staged one with `index`. */
+  scmOriginal: (root: string, file: string, runtime?: string, index = false) =>
+    invoke<string | null>("scm_original", { root, file, index, runtime }),
   scmDiscard: (root: string, tracked: string[], untracked: string[], runtime?: string) =>
     invoke<void>("scm_discard", { root, tracked, untracked, runtime }),
   scmSync: (root: string, op: "push" | "publish" | "pull" | "fetch", runtime?: string) =>

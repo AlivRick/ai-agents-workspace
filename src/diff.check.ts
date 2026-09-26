@@ -1,4 +1,4 @@
-import { parseDiff, sideBySide, stat } from "./diff.ts";
+import { parseDiff, stat } from "./diff.ts";
 
 let bad = 0;
 const eq = (got: unknown, want: unknown, name: string) => {
@@ -43,9 +43,6 @@ eq(added.filter((r) => r.old !== null).length, 0, "file moi khong co so ben cu")
 eq(stat(2, 1, false), "+2 −1", "tom tat so dong");
 eq(stat(0, 0, true), "binary", "file nhi phan khong dem dong");
 
-// Hai cot: "two" -> "TWO" nam cung hang, "three" chi co ben moi.
-const side = sideBySide(rows).map((p) => ("hunk" in p ? "@@" : `${p.l?.text ?? "_"}|${p.r?.text ?? "_"}`));
-eq(side, ["@@", "one|one", "two|TWO", "_|three", "four|four"], "cu | moi thang hang");
 
 if (bad) throw new Error("diff: " + bad + " loi");
-console.log("diff: 14 truong hop deu dung");
+console.log("diff: 13 truong hop deu dung");

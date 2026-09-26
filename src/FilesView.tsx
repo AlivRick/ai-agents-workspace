@@ -4,7 +4,7 @@ import { api, shortPath, type Entry, type ScmItem, type ScmStatus } from "./api"
 import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import CodeEditor from "./CodeEditor";
 import { Menu, Picker, type Item, type Pick, type PickerAsk } from "./ScmMenu";
-import { parseDiff, sideBySide, type Row } from "./diff";
+import DiffEditor from "./DiffEditor";
 import { allFiles, buildTree, type Folder } from "./scmtree";
 import { fileIcon, folderIcon, type IconTable } from "./icons";
 import iconTable from "./icons.gen.json";
@@ -23,19 +23,20 @@ const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
  *  `invoke`, so a `<img onerror>` in some repo's markdown would be code running
  *  with the app's rights. */
 const md = new Marked({ renderer: { html: ({ text }) => esc(text) } });
-/** One half of a side-by-side row. `changed` is false for context lines, which
- *  are the same object on both sides. */
-const cell = (r: Row | null, side: "old" | "new", changed: boolean) => (
-  <>
-    <span className="ln">{r ? (side === "old" ? r.old : r.new) : ""}</span>
-    <span className={"tx" + (!r ? " none" : changed ? (side === "old" ? " del" : " add") : "")}>{r?.text ?? ""}</span>
-  </>
-);
 const T = iconTable as IconTable;
 /** A Material Icon Theme icon, the set VS Code users know. */
 const Ico = ({ k }: { k: string }) => <img className="fi" src={`/material/${k}.svg`} alt="" draggable={false} />;
+/** VS Code's chevron: points right when shut, down when open. */
+const Chev = ({ open }: { open: boolean }) => (
+  <svg className={"chev" + (open ? " open" : "")} viewBox="0 0 16 16" aria-hidden>
+    <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
+  </svg>
+);
 const isMd = (p: string) => /\.(md|markdown|mdx)$/i.test(p);
 const base = (p: string) => p.split(/[\\/]/).pop() ?? p;
+const parent = (p: string) => p.slice(0, Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")));
+/** Is `p` the path `of` or something inside it. */
+const under = (p: string, of: string) => p === of || p.startsWith(of + "/") || p.startsWith(of + "\\");
 
 /**
  * Explorer + Source Control, the part of VS Code you open to look at what an
@@ -58,7 +59,9 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
   const [readErr, setReadErr] = useState("");
   /** HEAD's copy of the open file, for the editor's change bars. */
   const [orig, setOrig] = useState<string | null | undefined>(undefined);
-  const [diff, setDiff] = useState("");
+  /** The two sides of the Diff tab: the older copy, and the newer one when
+   *  that is not the file on disk (a staged diff). */
+  const [pair, setPair] = useState<{ a: string; b: string | null } | string | null>(null);
   const [error, setError] = useState("");
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
@@ -67,6 +70,12 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
   const [pending, setPending] = useState("");
   const [tick, setTick] = useState(0);
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
+  /** The Explorer's right-click menu; `e` null is the workspace folder itself. */
+  const [ctx, setCtx] = useState<{ x: number; y: number; e: Entry | null } | null>(null);
+  /** What Cut/Copy put aside for Paste. */
+  const [clip, setClip] = useState<{ path: string; cut: boolean } | null>(null);
+  /** The last row clicked, for F2 / Del / Ctrl+C·X·V. */
+  const [sel, setSel] = useState<Entry | null>(null);
   const [ask, setAsk] = useState<PickerAsk | null>(null);
   const [output, setOutput] = useState<{ at: number; label: string; ok: boolean; text: string }[]>([]);
   const [showOut, setShowOut] = useState(false);
@@ -78,6 +87,15 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
   const [split, setSplit] = useState(() => { try { return localStorage.getItem("diffSplit") !== "0"; } catch { return true; } });
   const pickSplit = (v: boolean) => { setSplit(v); try { localStorage.setItem("diffSplit", v ? "1" : "0"); } catch { /* private mode */ } };
   const dirty = text !== saved;
+  /** VS Code's sides: working tree is staged copy → file on disk; staged is
+   *  HEAD → staged copy. A side git has no copy of is empty. */
+  const sides = async (o: Open) => {
+    const [a, b] = await Promise.all([
+      api.scmOriginal(root, o.rel!, runtime, !o.staged),
+      o.staged ? api.scmOriginal(root, o.rel!, runtime, true) : null,
+    ]);
+    return { a: a ?? "", b: o.staged ? b ?? "" : null };
+  };
 
   useEffect(() => {
     setKids({});
@@ -106,8 +124,8 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
           setScm((p) => (same(p, s) ? p : s));
           const o = live.current.open;
           if (o?.rel && o.status !== "U") {
-            const d = await api.scmDiff(root, o.rel, !!o.staged, runtime).catch((e) => String(e));
-            if (!stop && live.current.open === o) setDiff(d);
+            const d = await sides(o).catch((e) => String(e));
+            if (!stop && live.current.open === o) setPair((p) => (same(p, d) ? p : d));
           }
           // An agent rewrote the file you are looking at: show its version,
           // unless you have edits of your own in the box.
@@ -153,9 +171,10 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
   }, [open, root]);
 
   useEffect(() => {
-    if (!open?.rel || open.status === "U") return setDiff("");
+    setPair(null);
+    if (!open?.rel || open.status === "U") return;
     let live = true;
-    api.scmDiff(root, open.rel, !!open.staged, runtime).then((d) => live && setDiff(d)).catch((e) => live && setDiff(String(e)));
+    sides(open).then((d) => live && setPair(d)).catch((e) => live && setPair(String(e)));
     return () => { live = false; };
   }, [open, root, runtime, tick]);
 
@@ -449,19 +468,138 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
 
 
 
-  const tree = (dir: string, depth: number): React.ReactNode =>
-    kids[dir]?.map((e) => (
+  // ------------------------------------------ the Explorer's right-click menu
+  const sep = root.includes("\\") ? "\\" : "/";
+  const join = (dir: string, n: string) => dir + sep + n.replace(/[\\/]+/g, sep);
+  /** Re-read folders now instead of waiting for the next poll, opening them. */
+  const reload = (...dirs: string[]) => {
+    for (const d of new Set(dirs)) api.fsList(root, d).then((e) => setKids((k) => ({ ...k, [d]: e }))).catch(() => {});
+  };
+  /** Forget listings under a path that was renamed or deleted. */
+  const forget = (p: string) => {
+    setKids((k) => Object.fromEntries(Object.entries(k).filter(([d]) => !under(d, p))));
+    setSel((x) => (x && under(x.path, p) ? null : x));
+  };
+  /** The open file is at or under `p` with edits in the box: say so, don't lose them. */
+  const holds = (p: string) => {
+    if (!(open && under(open.abs, p) && dirty)) return false;
+    setError(`Unsaved changes in ${base(open.abs)} — save them first.`);
+    return true;
+  };
+  const close = () => { setOpen(null); setText(""); setSaved(""); };
+  const folderOf = (e: Entry | null) => (!e ? root : e.dir ? e.path : parent(e.path));
+
+  const newItem = async (e: Entry | null, folder: boolean) => {
+    const dir = folderOf(e);
+    const n = await prompt(folder ? "New Folder" : "New File", { placeholder: folder ? "Folder name" : "File name (a/b.ts makes the folder too)", free: true });
+    if (!n) return;
+    const p = join(dir, n);
+    run(async () => {
+      await api.fsOp(root, folder ? "folder" : "file", p);
+      reload(dir, parent(p));
+      if (!folder) go({ abs: p }, isMd(p) ? "preview" : "edit");
+    });
+  };
+  const renameItem = async (e: Entry) => {
+    if (holds(e.path)) return;
+    const n = await prompt("Rename", { placeholder: "New name", free: true, value: e.name });
+    if (!n || n === e.name) return;
+    const to = join(parent(e.path), n);
+    run(async () => {
+      await api.fsOp(root, "rename", e.path, to);
+      forget(e.path);
+      reload(parent(e.path), parent(to));
+      if (open && under(open.abs, e.path)) setOpen({ abs: to + open.abs.slice(e.path.length) });
+    });
+  };
+  const deleteItem = async (e: Entry) => {
+    const ok = await confirmDialog(`Are you sure you want to permanently delete '${e.name}'${e.dir ? " and its contents" : ""}?\n\nThis action is irreversible!`,
+      { title: "Delete Permanently", kind: "warning", okLabel: "Delete", cancelLabel: "Cancel" });
+    if (!ok) return;
+    run(async () => {
+      await api.fsOp(root, "delete", e.path);
+      forget(e.path);
+      reload(parent(e.path));
+      if (open && under(open.abs, e.path)) close();
+      if (clip && under(clip.path, e.path)) setClip(null);
+    });
+  };
+  const paste = (e: Entry | null) => {
+    if (!clip) return;
+    const dir = folderOf(e);
+    if (clip.cut) {
+      if (holds(clip.path)) return;
+      const to = join(dir, base(clip.path));
+      if (to === clip.path) return setClip(null);
+      run(async () => {
+        await api.fsOp(root, "rename", clip.path, to);
+        forget(clip.path);
+        reload(parent(clip.path), dir);
+        if (open && under(open.abs, clip.path)) setOpen({ abs: to + open.abs.slice(clip.path.length) });
+        setClip(null);
+      });
+    } else {
+      run(async () => { await api.fsOp(root, "copy", clip.path, dir); reload(dir); });
+    }
+  };
+  const copyText = (t: string) => void navigator.clipboard.writeText(t).catch((x) => setError(String(x)));
+  const rel = (p: string) => p.slice(root.length).replace(/^[\\/]/, "");
+
+  const ctxItems = (e: Entry | null): Item[] => {
+    const p = e?.path ?? root;
+    return [
+      { label: "New File…", run: () => void newItem(e, false) },
+      { label: "New Folder…", run: () => void newItem(e, true) },
+      { label: "Reveal in File Explorer", key: "Shift+Alt+R", run: () => run(() => api.fsOp(root, "reveal", p)) },
+      "-",
+      ...(e ? [
+        { label: "Cut", key: "Ctrl+X", run: () => setClip({ path: e.path, cut: true }) },
+        { label: "Copy", key: "Ctrl+C", run: () => setClip({ path: e.path, cut: false }) },
+      ] : []),
+      { label: "Paste", key: "Ctrl+V", disabled: !clip, run: () => paste(e) },
+      "-",
+      { label: "Copy Path", key: "Shift+Alt+C", run: () => copyText(p) },
+      { label: "Copy Relative Path", run: () => copyText(rel(p) || ".") },
+      ...(e ? [
+        "-" as const,
+        { label: "Rename…", key: "F2", run: () => void renameItem(e) },
+        { label: "Delete Permanently", key: "Del", run: () => void deleteItem(e) },
+      ] : []),
+    ];
+  };
+  /** VS Code's keys, while a tree row has focus (not the commit box). */
+  const treeKey = (ev: React.KeyboardEvent) => {
+    if (!sel || !(ev.target as HTMLElement).closest(".frow")) return;
+    const k = (ev.ctrlKey || ev.metaKey ? "C-" : "") + (ev.shiftKey ? "S-" : "") + (ev.altKey ? "A-" : "") + ev.key.toLowerCase();
+    const f: Record<string, () => void> = {
+      f2: () => void renameItem(sel),
+      delete: () => void deleteItem(sel),
+      "C-c": () => setClip({ path: sel.path, cut: false }),
+      "C-x": () => setClip({ path: sel.path, cut: true }),
+      "C-v": () => paste(sel),
+      "S-A-r": () => run(() => api.fsOp(root, "reveal", sel.path)),
+      "S-A-c": () => copyText(sel.path),
+    };
+    if (f[k]) { ev.preventDefault(); f[k](); }
+  };
+
+  const ignored = useMemo(() => new Set(scm?.ignored ?? []), [scm]);
+  /** `dim`: the folder being listed is git-ignored, so all of it is. */
+  const tree = (dir: string, depth: number, dim = false): React.ReactNode =>
+    kids[dir]?.map((e) => { const ig = dim || ignored.has(e.path); return (
       <div key={e.path}>
-        <button className={"frow" + (open?.abs === e.path ? " on" : "")} style={{ paddingLeft: 7 + depth * 12 }}
-                onClick={() => (e.dir ? toggle(e.path) : fromTree(e))} title={e.path}>
-          <span className="tw">{e.dir ? (kids[e.path] ? "▾" : "▸") : ""}</span>
+        <button className={"frow" + (open?.abs === e.path ? " on" : "") + (clip?.cut && clip.path === e.path ? " cut" : "") + (ig ? " ign" : "")}
+                style={{ paddingLeft: 7 + depth * 12 }} title={e.path}
+                onClick={() => { setSel(e); if (e.dir) toggle(e.path); else fromTree(e); }}
+                onContextMenu={(ev) => { ev.preventDefault(); ev.stopPropagation(); setSel(e); setCtx({ x: ev.clientX, y: ev.clientY, e }); }}>
+          <span className="tw">{e.dir && <Chev open={!!kids[e.path]} />}</span>
           <Ico k={e.dir ? folderIcon(T, e.name, !!kids[e.path]) : fileIcon(T, e.name)} />
           <span className={"t" + (marks[e.path] ? " s" + marks[e.path] : "")}>{e.name}</span>
           {marks[e.path] && <span className={"st s" + marks[e.path]}>{marks[e.path]}</span>}
         </button>
-        {e.dir && kids[e.path] && tree(e.path, depth + 1)}
+        {e.dir && kids[e.path] && tree(e.path, depth + 1, ig)}
       </div>
-    ));
+    ); });
 
   const fold = (key: string) => setShut((c) => { const n = new Set(c); if (n.has(key)) n.delete(key); else n.add(key); return n; });
   const pickTree = (v: boolean) => { setAsTree(v); try { localStorage.setItem("scmTree", v ? "1" : "0"); } catch { /* ok */ } };
@@ -508,7 +646,7 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
       const key = `${kind}:${d.path}`;
       return [
         <div key={key} className="scm-row folder" style={{ paddingLeft: 7 + depth * 12 }} onClick={() => fold(key)}>
-          <span className="tw">{shut.has(key) ? "▸" : "▾"}</span>
+          <span className="tw"><Chev open={!shut.has(key)} /></span>
           <Ico k={folderIcon(T, d.name.split("/").pop() ?? d.name, !shut.has(key))} />
           <span className="t">{d.name}</span>
           <span className="sp" />
@@ -526,7 +664,7 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
     return (
       <>
         <div className="sec click" onClick={() => fold(key)}>
-          <span className="tw">{shut.has(key) ? "▸" : "▾"}</span>
+          <span className="tw"><Chev open={!shut.has(key)} /></span>
           <span>{title}</span><b>{items.length}</b><span className="sp" />
           {items.length > 0 && acts(items, kind)}
         </div>
@@ -537,7 +675,10 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
 
   if (!root) return <div className="view" style={{ display: "flex" }}><div className="hint">Pick a workspace in the sidebar first.</div></div>;
 
-  const rows = mode === "diff" ? parseDiff(diff) : [];
+  // `git show` loses the final newline; give it back when the other side has
+  // one, or every file would end on a changed line.
+  const right = pair && typeof pair !== "string" ? pair.b ?? text : "";
+  const left = pair && typeof pair !== "string" ? (right.endsWith("\n") && !pair.a.endsWith("\n") && pair.a ? pair.a + "\n" : pair.a) : "";
   const canEdit = !!open?.abs && open.status !== "D" && !readErr;
 
   return (
@@ -597,8 +738,15 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
               {group("Changes", scm.changes, "changes")}
             </>
           )}
-          <div className="sec"><span>Explorer</span></div>
-          {tree(root, 0)}
+          <div className="sec"><span>Explorer</span><span className="sp" />
+            <button className="mini" title="New File…" onClick={() => void newItem(sel, false)}>+</button>
+            <button className="mini" title="New Folder…" onClick={() => void newItem(sel, true)}>⊞</button>
+          </div>
+          {/* Right-click on the empty space below the tree: the workspace folder. */}
+          <div className="ftree" onKeyDown={treeKey}
+               onContextMenu={(ev) => { ev.preventDefault(); setCtx({ x: ev.clientX, y: ev.clientY, e: null }); }}>
+            {tree(root, 0)}
+          </div>
         </div>
 
         <div className="pane-ed">
@@ -625,33 +773,10 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
                   <button className="btn primary" disabled={!dirty || busy} onClick={save}>{dirty ? "Save" : "Saved"}</button>
                 )}
               </div>
-              {mode === "diff" && rows.length === 0 && <div className="hint">{diff || "No diff."}</div>}
-              {/* No hunk at all means git printed an error, not a diff — show it. */}
-              {mode === "diff" && rows.length > 0 && split && !rows.some((r) => r.kind === "hunk") && <div className="hint">{diff}</div>}
-              {mode === "diff" && rows.some((r) => r.kind === "hunk") && split && (
-                <div className="diff sbs">
-                  <div className="sl head"><span>Old{open.staged ? " (HEAD)" : open.rel && " (staged / HEAD)"}</span><span>New{open.staged ? " (staged)" : " (working tree)"}</span></div>
-                  {sideBySide(rows).map((p, i) =>
-                    "hunk" in p ? (
-                      <div key={i} className="dl hunk"><span className="tx">{p.hunk}</span></div>
-                    ) : (
-                      <div key={i} className="sl">
-                        {cell(p.l, "old", p.l !== p.r)}
-                        {cell(p.r, "new", p.l !== p.r)}
-                      </div>
-                    ))}
-                </div>
-              )}
-              {mode === "diff" && rows.length > 0 && !split && (
-                <div className="diff">
-                  {rows.map((r, i) => (
-                    <div key={i} className={"dl " + r.kind}>
-                      <span className="ln">{r.old ?? ""}</span>
-                      <span className="ln">{r.new ?? ""}</span>
-                      <span className="tx">{r.kind === "add" ? "+" : r.kind === "del" ? "-" : " "}{r.text}</span>
-                    </div>
-                  ))}
-                </div>
+              {mode === "diff" && typeof pair === "string" && <div className="hint">{pair}</div>}
+              {mode === "diff" && pair && typeof pair !== "string" && (
+                <DiffEditor key={open.abs + "|" + open.staged} file={open.abs || open.rel || ""} old={left} value={right}
+                            editable={!open.staged && canEdit} split={split} onChange={setText} onSave={save} />
               )}
               {mode !== "diff" && readErr && <div className="hint">{readErr}</div>}
               {mode === "edit" && canEdit && (
@@ -667,6 +792,7 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
         </div>
       </div>
       {menuAt && <Menu items={menu} x={menuAt.x} y={menuAt.y} onClose={() => setMenuAt(null)} />}
+      {ctx && <Menu items={ctxItems(ctx.e)} x={ctx.x} y={ctx.y} onClose={() => setCtx(null)} />}
       {ask && <Picker ask={ask} />}
       {showOut && (
         <div className="modal" onClick={() => setShowOut(false)}>
