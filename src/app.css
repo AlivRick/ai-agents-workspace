@@ -213,7 +213,11 @@ input { font: inherit; color: inherit; }
 .pane.focus .ph { background: var(--raise); }
 .pane .ph .nm { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pane .ph .sp { flex: 1; }
-.pane .term { flex: 1; min-height: 0; }
+.pane .term-row { flex: 1; min-height: 0; display: flex; position: relative; }
+.pane .term { flex: 1; min-width: 0; }
+/* The ruler sits where xterm's own scrollbar was: with that one hidden, xterm
+   still keeps a 15px gutter for it (its fallback width), which this fills. */
+.pane .term-row .ruler { position: absolute; top: 0; right: 0; bottom: 0; border-left: 0; background: transparent; }
 /* Padding on .xterm, never on .term: FitAddon subtracts .xterm's padding but
    reads the parent's border-box width, so padding there sized the text 11px
    too wide and it covered the scrollbar (I-beam cursor, no dragging). */
@@ -799,7 +803,8 @@ table.plain td.mono { font-family: var(--mono); }
 .explorer .frow.cut { opacity: .5; }
 .explorer .ftree { min-height: 120px; }
 /* CodeMirror editor: fills the pane; change bars like VS Code's gutter. */
-.code-ed { flex: 1; min-height: 0; overflow: hidden; }
+.code-ed { flex: 1; min-height: 0; overflow: hidden; display: flex; }
+.code-host { flex: 1; min-width: 0; }
 .code-ed .cm-editor { height: 100%; font-size: 13px; }
 .code-ed .cm-scroller { font-family: var(--mono); line-height: 1.55; }
 .code-ed .cm-chg-gutter { width: 4px; }
@@ -854,12 +859,16 @@ table.plain td.mono { font-family: var(--mono); }
 .diff-host { flex: 1; min-width: 0; display: flex; }
 .diff-host > .cm-editor, .diff-host > .cm-mergeView { flex: 1; min-width: 0; height: 100%; font-size: 13px; }
 /* VS Code's overview ruler: where the changes are in the whole file. */
-.diff-ed .ruler { flex: none; width: 14px; position: relative; background: #1e1e1e; border-left: 1px solid var(--line); cursor: default; }
-.diff-ed .ruler .port { position: absolute; left: 0; right: 0; background: rgba(121, 121, 121, .2); pointer-events: none; }
-.diff-ed .ruler:hover .port { background: rgba(100, 100, 100, .35); }
-.diff-ed .ruler .rm { position: absolute; width: 5px; min-height: 2px; pointer-events: none; }
-.diff-ed .ruler .rm.a { left: 1px; background: #f85149; }
-.diff-ed .ruler .rm.b { right: 1px; background: #2ea043; }
+/* ScrollRuler: VS Code's wide scrollbar, replacing the thin native one. */
+/* Only the vertical bar goes; long lines keep their horizontal one. */
+.ruled::-webkit-scrollbar { width: 0; }
+.ruler { flex: none; width: 14px; position: relative; background: #1e1e1e; border-left: 1px solid var(--line); cursor: default; user-select: none; }
+.ruler .port { position: absolute; left: 0; right: 0; min-height: 20px; background: rgba(121, 121, 121, .3); pointer-events: none; }
+.ruler:hover .port { background: rgba(121, 121, 121, .45); }
+.ruler:active .port { background: rgba(191, 191, 191, .4); }
+.ruler .rm { position: absolute; width: 5px; min-height: 2px; pointer-events: none; }
+.ruler .rm.a { left: 1px; background: #f85149; }
+.ruler .rm.b { right: 1px; background: #2ea043; }
 .diff-ed .cm-mergeView { overflow-y: auto; }
 .diff-ed .cm-scroller { font-family: var(--mono); line-height: 1.55; }
 .diff-ed .cm-mergeViewEditor + .cm-mergeViewEditor, .diff-ed .cm-merge-revert + .cm-mergeViewEditor { border-left: 1px solid var(--line); }

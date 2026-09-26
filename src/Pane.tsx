@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import ScrollRuler from "./ScrollRuler";
 import { Terminal, type IMarker } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -36,6 +37,7 @@ export default function Pane({
   const findBox = useRef<HTMLInputElement>(null);
   const [dead, setDead] = useState(false);
   const [find, setFind] = useState<string | null>(null);
+  const [viewport, setViewport] = useState<HTMLElement | null>(null);
 
   useEffect(() => {
     const term = new Terminal({
@@ -49,6 +51,7 @@ export default function Pane({
     term.loadAddon(finder);
     term.loadAddon(new WebLinksAddon());
     term.open(host.current!);
+    setViewport(host.current!.querySelector<HTMLElement>(".xterm-viewport"));
     fit.fit();
     termRef.current = term;
     search.current = finder;
@@ -217,12 +220,15 @@ export default function Pane({
       {/* Copy on select, the way every terminal emulator behaves. Only on
           mouse-up: doing it in onSelectionChange rewrites the clipboard on
           every pixel of the drag. */}
-      <div className={"term" + (dead ? " dead" : "")} ref={host} onMouseDown={onFocus}
-           onMouseUp={() => {
-             const t = termRef.current;
-             if (t?.hasSelection()) void navigator.clipboard.writeText(t.getSelection()).catch(() => {});
-           }}
-           style={{ opacity: dead ? 0.55 : 1 }} data-focused={focused} />
+      <div className="term-row">
+        <div className={"term" + (dead ? " dead" : "")} ref={host} onMouseDown={onFocus}
+             onMouseUp={() => {
+               const t = termRef.current;
+               if (t?.hasSelection()) void navigator.clipboard.writeText(t.getSelection()).catch(() => {});
+             }}
+             style={{ opacity: dead ? 0.55 : 1 }} data-focused={focused} />
+        <ScrollRuler target={viewport} />
+      </div>
     </>
   );
 }

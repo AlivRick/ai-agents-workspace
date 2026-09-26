@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { basicSetup } from "codemirror";
 import { indentWithTab } from "@codemirror/commands";
 import { LanguageDescription } from "@codemirror/language";
@@ -7,6 +7,7 @@ import { Compartment, EditorState, RangeSet, StateEffect, StateField } from "@co
 import { EditorView, GutterMarker, gutter, keymap } from "@codemirror/view";
 import { vscodeDark } from "@uiw/codemirror-theme-vscode";
 import { lineMarks, type Mark } from "./gutter";
+import ScrollRuler from "./ScrollRuler";
 
 class Bar extends GutterMarker {
   constructor(readonly kind: Mark) { super(); }
@@ -50,6 +51,7 @@ export default function CodeEditor({ file, value, original, onChange, onSave }: 
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const lang = useRef(new Compartment());
+  const [scroller, setScroller] = useState<HTMLElement | null>(null);
   // The view is built once; these keep its callbacks pointing at the latest props.
   const cb = useRef({ onChange, onSave });
   cb.current = { onChange, onSave };
@@ -70,6 +72,7 @@ export default function CodeEditor({ file, value, original, onChange, onSave }: 
       }),
     });
     view.current = v;
+    setScroller(v.scrollDOM);
     const desc = LanguageDescription.matchFilename(languages, file.split(/[\\/]/).pop() ?? file);
     desc?.load().then((l) => view.current === v && v.dispatch({ effects: lang.current.reconfigure(l) }));
     return () => { v.destroy(); view.current = null; };
@@ -92,5 +95,10 @@ export default function CodeEditor({ file, value, original, onChange, onSave }: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [original, file]);
 
-  return <div className="code-ed" ref={host} />;
+  return (
+    <div className="code-ed">
+      <div className="code-host" ref={host} />
+      <ScrollRuler target={scroller} />
+    </div>
+  );
 }

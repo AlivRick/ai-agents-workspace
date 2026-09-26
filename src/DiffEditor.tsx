@@ -7,6 +7,7 @@ import { MergeView, getChunks, getOriginalDoc, unifiedMergeView, updateOriginalD
 import { ChangeSet, Compartment, EditorState, Text, type Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { vscodeDark } from "@uiw/codemirror-theme-vscode";
+import ScrollRuler, { type RulerMark } from "./ScrollRuler";
 
 /**
  * VS Code's diff editor: the whole file on both sides, syntax colours, lines
@@ -25,10 +26,9 @@ export default function DiffEditor({ file, old, value, editable, split, onChange
   const cur = useRef<{ a?: EditorView; b: EditorView; destroy: () => void } | null>(null);
   const cb = useRef({ onChange, onSave });
   cb.current = { onChange, onSave };
-  /** Ruler marks and the shaded viewport, as fractions of the document height. */
-  const [marks, setMarks] = useState<{ top: number; h: number; lane: "a" | "b" }[]>([]);
-  const [port, setPort] = useState({ top: 0, h: 1 });
-  const geo = useRef<{ scroller: HTMLElement; measure: () => void } | null>(null);
+  const [marks, setMarks] = useState<RulerMark[]>([]);
+  const [scroller, setScroller] = useState<HTMLElement | null>(null);
+  const geo = useRef<{ measure: () => void } | null>(null);
 
   useEffect(() => {
     const langs: [EditorView, Compartment][] = [];
@@ -82,14 +82,13 @@ export default function DiffEditor({ file, old, value, editable, split, onChange
         if (c.toB > c.fromB) out.push({ lane: "b", ...at(b, c.fromB, c.toB) });
       }
       setMarks(out);
-      setPort({ top: scroller.scrollTop / scroller.scrollHeight, h: scroller.clientHeight / scroller.scrollHeight });
     };
-    geo.current = { scroller, measure };
-    scroller.addEventListener("scroll", measure, { passive: true });
+    geo.current = { measure };
+    setScroller(scroller);
     requestAnimationFrame(measure);
     const desc = LanguageDescription.matchFilename(languages, file.split(/[\\/]/).pop() ?? file);
     desc?.load().then((l) => cur.current === mine && langs.forEach(([v, c]) => v.dispatch({ effects: c.reconfigure(l) })));
-    return () => { scroller.removeEventListener("scroll", measure); mine.destroy(); cur.current = null; geo.current = null; };
+    return () => { setScroller(null); mine.destroy(); cur.current = null; geo.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file, split, editable]);
 
@@ -111,29 +110,10 @@ export default function DiffEditor({ file, old, value, editable, split, onChange
     c.b.dispatch({ effects: updateOriginalDoc.of({ doc, changes: ChangeSet.of({ from: 0, to: prev.length, insert: doc }, prev.length) }) });
   }, [old]);
 
-  /** Centre the view on the ruler point under the mouse, and keep doing so while dragged. */
-  const drag = (e: React.MouseEvent<HTMLDivElement>) => {
-    const r = e.currentTarget.getBoundingClientRect();
-    const go = (y: number) => {
-      const s = geo.current?.scroller;
-      if (s) s.scrollTop = ((y - r.top) / r.height) * s.scrollHeight - s.clientHeight / 2;
-    };
-    go(e.clientY);
-    const move = (m: MouseEvent) => go(m.clientY);
-    const up = () => { removeEventListener("mousemove", move); removeEventListener("mouseup", up); };
-    addEventListener("mousemove", move);
-    addEventListener("mouseup", up);
-    e.preventDefault();
-  };
-  const pct = (f: number) => `${f * 100}%`;
-
   return (
     <div className="diff-ed">
       <div className="diff-host" ref={host} />
-      <div className="ruler" onMouseDown={drag} title="Changes — click or drag to scroll">
-        <div className="port" style={{ top: pct(port.top), height: pct(port.h) }} />
-        {marks.map((m, i) => <div key={i} className={"rm " + m.lane} style={{ top: pct(m.top), height: pct(m.h) }} />)}
-      </div>
+      <ScrollRuler target={scroller} marks={marks} />
     </div>
   );
 }
