@@ -899,3 +899,28 @@ table.plain td.mono { font-family: var(--mono); }
 .diff-ed .cm-mergeSpacer { background: repeating-linear-gradient(-45deg, transparent 0 6px, rgba(204, 204, 204, .12) 6px 7px); }
 .diff-ed .cm-merge-revert { background: #1e1e1e; border-left: 1px solid var(--line); }
 .diff-ed .cm-merge-revert button { color: #ccc; cursor: pointer; }
+
+/* Peek References: VS Code's peek zone, blue-edged, preview left, list right. */
+.peek-slot { display: block; }
+.peek { height: 290px; display: flex; flex-direction: column; margin: 2px 0; border-top: 2px solid #3794ff; border-bottom: 2px solid #3794ff;
+        background: #1b2530; font-family: system-ui, sans-serif; font-size: 12.5px; color: #cccccc; white-space: normal; outline: none; cursor: default; }
+.peek-head { flex: none; display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px 0 12px; background: #1f2d3b; }
+.peek-head .d { color: #9aa5b1; }
+.peek-head .sp { flex: 1; }
+.peek-head button { color: #ccc; font-size: 16px; width: 22px; height: 22px; border-radius: 4px; }
+.peek-head button:hover { background: rgba(255, 255, 255, .1); }
+.peek-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 32%); }
+.peek-prev { min-width: 0; min-height: 0; display: flex; background: #001f33; }
+.peek-prev .cm-editor { flex: 1; height: 100%; background: #001f33; }
+.peek-prev .cm-gutters { background: #001f33; }
+.peek-prev .hint { padding: 12px; color: #9aa5b1; }
+.peek-list { overflow: auto; background: #252526; border-left: 1px solid #3794ff55; padding: 2px 0; }
+.peek-list .pg { display: flex; align-items: center; gap: 6px; padding: 3px 8px; cursor: pointer; white-space: nowrap; }
+.peek-list .pg:hover, .peek-list .pr:hover { background: #2a2d2e; }
+.peek-list .pg .chev { width: 12px; display: inline-block; transition: transform .1s; }
+.peek-list .pg .chev.open { transform: rotate(90deg); }
+.peek-list .pg .d { color: #9aa5b1; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; }
+.peek-list .pg .n { margin-left: auto; min-width: 18px; text-align: center; font-size: 11px; border-radius: 9px; background: #4d4d4d; padding: 0 6px; }
+.peek-list .pr { padding: 2px 8px 2px 30px; font-family: var(--mono); font-size: 12px; white-space: pre; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.peek-list .pr.on { background: #04395e; outline: 1px solid #007fd4; outline-offset: -1px; }
+.peek-list .pr mark { background: rgba(234, 92, 0, .33); color: inherit; }

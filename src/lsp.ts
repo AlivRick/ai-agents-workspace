@@ -4,6 +4,7 @@ import { LSPClient, LSPPlugin, Workspace, languageServerExtensions, languageServ
 import type { ChangeSet, Extension, Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { uriMap } from "./lspuri.ts";
+import type { Ref } from "./Peek";
 
 /** File extension → [server (see lsp.rs), LSP language id]. */
 const LANGS: Record<string, [string, string]> = {
@@ -79,6 +80,9 @@ class Space extends Workspace {
 
 type Conn = { client: LSPClient; map: ReturnType<typeof uriMap>; failed: Promise<string> };
 const conns = new Map<string, Promise<Conn | string>>();
+/** Every workspace's path mapping, to turn a server's URI back into a file. */
+const maps = new Set<ReturnType<typeof uriMap>>();
+export const uriToPath = (uri: string) => { for (const m of maps) { const p = m.toPath(uri); if (p) return p; } return null; };
 /** Server process ids by the same key, for stopping them. */
 const ids = new Map<string, number>();
 /** Where Go to Definition sends a file it has to open. Set by the Explorer. */
@@ -98,6 +102,7 @@ function connect(root: string, runtime: string, server: string): Promise<Conn | 
     c = (async () => {
       const [id, seen] = await invoke<[number, string]>("lsp_start", { root, server, runtime });
       const map = uriMap(root, seen);
+      maps.add(map);
       const subs = new Set<(v: string) => void>();
       let died: (why: string) => void = () => {};
       const failed = new Promise<string>((r) => { died = r; });
@@ -146,4 +151,26 @@ export async function lspFor(root: string, runtime: string, abs: string, onFail:
   if (typeof c === "string") { onFail(`${c} — install the ${l[0]} language server: ${INSTALL[l[0]]}`); return null; }
   void c.failed.then(onFail);
   return languageServerSupport(c.client, c.map.toUri(abs), l[1]);
+}
+
+type Pos = { line: number; character: number };
+type Loc = { uri: string; range: { start: Pos; end: Pos } };
+/** A Location, a list of them, or LocationLinks — servers answer any of the three. */
+const locs = (r: unknown): Loc[] => (!r ? [] : (Array.isArray(r) ? r : [r]))
+  .map((x: any) => (x.targetUri ? { uri: x.targetUri, range: x.targetSelectionRange ?? x.targetRange } : x));
+
+/** Ask the server where the symbol under the cursor is defined, or used. */
+export async function locations(view: EditorView, what: "definition" | "references"): Promise<Ref[] | null> {
+  const p = LSPPlugin.get(view);
+  if (!p) return null;
+  p.client.sync();
+  const r = await p.client.request("textDocument/" + what, {
+    textDocument: { uri: p.uri },
+    position: p.toPosition(view.state.selection.main.head),
+    ...(what === "references" ? { context: { includeDeclaration: true } } : {}),
+  });
+  return locs(r).map((l) => ({
+    uri: l.uri, path: uriToPath(l.uri), line: l.range.start.line, from: l.range.start.character,
+    to: l.range.end.line === l.range.start.line ? l.range.end.character : l.range.start.character,
+  }));
 }
