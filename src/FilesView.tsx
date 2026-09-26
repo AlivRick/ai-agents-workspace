@@ -88,6 +88,8 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
   /** Edits of tabs that are not on screen, so switching tabs loses nothing. */
   const stash = useRef<Record<string, { text: string; saved: string }>>({});
   const [dropping, setDropping] = useState(false);
+  /** The right-click menu on an editor tab. */
+  const [tabCtx, setTabCtx] = useState<{ x: number; y: number; t: Tab } | null>(null);
   const [ask, setAsk] = useState<PickerAsk | null>(null);
   const [output, setOutput] = useState<{ at: number; label: string; ok: boolean; text: string }[]>([]);
   const [showOut, setShowOut] = useState(false);
@@ -237,20 +239,27 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
     setText(""); setSaved("");
     if (t) { setOpen(t); setMode(t.mode); } else setOpen(null);
   };
-  const closeTab = async (t: Tab) => {
-    const k = tkey(t);
-    const on = !!open && tkey(open) === k;
-    if ((on && dirty) || stash.current[k]) {
-      const ok = await confirmDialog(`Discard the unsaved changes in ${base(t.abs)}?`,
+  const unsaved = (t: Tab) => (!!open && tkey(open) === tkey(t) && dirty) || !!stash.current[tkey(t)];
+  /** Close several tabs; asks once if any of them has unsaved edits. */
+  const closeTabs = async (gone: Tab[]) => {
+    if (!gone.length) return;
+    const lost = gone.filter(unsaved);
+    if (lost.length) {
+      const ok = await confirmDialog(`Discard the unsaved changes in ${lost.map((t) => base(t.abs)).join(", ")}?`,
         { title: "Close", kind: "warning", okLabel: "Discard", cancelLabel: "Cancel" });
       if (!ok) return;
     }
-    delete stash.current[k];
-    const i = tabs.findIndex((x) => tkey(x) === k);
-    const rest = tabs.filter((x) => tkey(x) !== k);
+    const keys = new Set(gone.map(tkey));
+    for (const k of keys) delete stash.current[k];
+    const rest = tabs.filter((x) => !keys.has(tkey(x)));
     setTabs(rest);
-    if (on) show(rest[Math.min(i, rest.length - 1)]);
+    if (open && keys.has(tkey(open))) {
+      const i = tabs.findIndex((x) => tkey(x) === tkey(open));
+      // The nearest survivor to the right, else the last one.
+      show(tabs.slice(i + 1).find((x) => !keys.has(tkey(x))) ?? rest[rest.length - 1]);
+    }
   };
+  const closeTab = (t: Tab) => closeTabs([t]);
   const fromScm = (i: ScmItem, staged: boolean) =>
     go({ abs: i.abs, rel: i.path, staged, status: i.status },
        // A conflict opens as text: the <<<<<<< markers are what you edit.
@@ -607,6 +616,35 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
     }
   };
   const copyText = (t: string) => void navigator.clipboard.writeText(t).catch((x) => setError(String(x)));
+  /** Open the folders down to `p` in the tree, select it and scroll to it. */
+  const revealInTree = async (p: string) => {
+    const dirs: string[] = [];
+    for (let d = parent(p); d.length > root.length; d = parent(d)) dirs.unshift(d);
+    const got: Record<string, Entry[]> = {};
+    try { for (const d of dirs) if (!kids[d]) got[d] = await api.fsList(root, d); } catch (e) { return setError(String(e)); }
+    setKids((k) => ({ ...k, ...got }));
+    setSel({ name: base(p), path: p, dir: false });
+    setPicked(new Set([p]));
+    anchor.current = p;
+    setTimeout(() => document.querySelector(`.explorer .frow[data-path="${CSS.escape(p)}"]`)?.scrollIntoView({ block: "center" }), 50);
+  };
+  const tabItems = (t: Tab): Item[] => {
+    const i = tabs.findIndex((x) => tkey(x) === tkey(t));
+    const p = t.abs || t.rel || "";
+    return [
+      { label: "Close", key: "Ctrl+W", run: () => void closeTab(t) },
+      { label: "Close Others", disabled: tabs.length < 2, run: () => void closeTabs(tabs.filter((x) => tkey(x) !== tkey(t))) },
+      { label: "Close to the Right", disabled: i === tabs.length - 1, run: () => void closeTabs(tabs.slice(i + 1)) },
+      { label: "Close Saved", run: () => void closeTabs(tabs.filter((x) => !unsaved(x))) },
+      { label: "Close All", run: () => void closeTabs(tabs) },
+      "-",
+      { label: "Copy Path", key: "Shift+Alt+C", run: () => copyText(p) },
+      { label: "Copy Relative Path", run: () => copyText(rel(p)) },
+      "-",
+      { label: "Reveal in Explorer View", disabled: !t.abs, run: () => void revealInTree(t.abs) },
+      { label: "Reveal in File Explorer", key: "Shift+Alt+R", disabled: !t.abs, run: () => run(() => api.fsOp(root, "reveal", t.abs)) },
+    ];
+  };
   const rel = (p: string) => p.slice(root.length).replace(/^[\\/]/, "");
 
   const ctxItems = (e: Entry | null): Item[] => {
@@ -695,7 +733,7 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
       <div key={e.path}>
         <button className={"frow" + (open?.abs === e.path ? " on" : "") + (picked.has(e.path) && picked.size > 1 ? " sel" : "")
                            + (clip?.cut && clip.path === e.path ? " cut" : "") + (ig ? " ign" : "")}
-                style={{ paddingLeft: 7 + depth * 12 }} title={e.path} draggable
+                style={{ paddingLeft: 7 + depth * 12 }} title={e.path} data-path={e.path} draggable
                 onClick={(ev) => pick(ev, e)} onDragStart={(ev) => dragStart(ev, e)}
                 onContextMenu={(ev) => { ev.preventDefault(); ev.stopPropagation(); setSel(e); setCtx({ x: ev.clientX, y: ev.clientY, e }); }}>
           <span className="tw">{e.dir && <Chev open={!!kids[e.path]} />}</span>
@@ -872,7 +910,8 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
                 return (
                   <div key={k} className={"etab" + (on ? " on" : "")} title={t.abs || t.rel}
                        onClick={() => !on && go(t, t.mode)}
-                       onMouseDown={(ev) => { if (ev.button === 1) { ev.preventDefault(); void closeTab(t); } }}>
+                       onMouseDown={(ev) => { if (ev.button === 1) { ev.preventDefault(); void closeTab(t); } }}
+                       onContextMenu={(ev) => { ev.preventDefault(); setTabCtx({ x: ev.clientX, y: ev.clientY, t }); }}>
                     <Ico k={fileIcon(T, base(t.abs || t.rel || ""))} />
                     <span>{base(t.abs || t.rel || "")}</span>
                     {(on ? mode : t.mode) === "diff" && <span className="k">{t.staged ? "Index" : "Working Tree"}</span>}
@@ -926,6 +965,7 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
       </div>
       {menuAt && <Menu items={menu} x={menuAt.x} y={menuAt.y} onClose={() => setMenuAt(null)} />}
       {ctx && <Menu items={ctxItems(ctx.e)} x={ctx.x} y={ctx.y} onClose={() => setCtx(null)} />}
+      {tabCtx && <Menu items={tabItems(tabCtx.t)} x={tabCtx.x} y={tabCtx.y} onClose={() => setTabCtx(null)} />}
       {ask && <Picker ask={ask} />}
       {showOut && (
         <div className="modal" onClick={() => setShowOut(false)}>
