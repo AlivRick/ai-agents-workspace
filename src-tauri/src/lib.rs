@@ -639,12 +639,13 @@ async fn fs_write(root: String, path: String, content: String) -> Result<(), Str
 /// Start a language server for the Explorer's editor. See `lsp.rs`.
 #[tauri::command]
 async fn lsp_start(
-    app: State<'_, App>, handle: tauri::AppHandle, servers: State<'_, lsp::Servers>,
+    app: State<'_, App>, handle: tauri::AppHandle,
     root: String, server: String, runtime: Option<String>,
-) -> Result<(u32, String), String> {
+) -> Result<(u32, String, Option<String>), String> {
     let r = rt(runtime);
     let shell = wsl::distro_of(&r).and_then(|_| app.runtimes_cached().into_iter().find(|x| x.id == r).map(|x| x.shell));
-    lsp::start(&handle, &servers, &r, shell, &root, &server)
+    // Off the async runtime: asking the shell for `npm root -g` takes a second.
+    blocking(move || lsp::start(&handle, &handle.state::<lsp::Servers>(), &r, shell, &root, &server)).await?
 }
 
 #[tauri::command]

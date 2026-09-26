@@ -30,6 +30,19 @@ pub fn command(server: &str) -> Option<&'static str> {
     })
 }
 
+/// TypeScript 7 (the Go port) has no tsserver.js, which typescript-language-server
+/// needs, but speaks LSP itself (`tsc --lsp`). So: typescript-language-server
+/// when the project brings its own TypeScript 5 or the global tsc is not 7+,
+/// otherwise tsc's own server. In `sh -c` so it works whatever the login shell.
+const TS_UNIX: &str = "sh -c \"if command -v typescript-language-server >/dev/null && \
+{ [ -f node_modules/typescript/lib/tsserver.js ] || ! tsc --version 2>/dev/null | grep -q 'Version [7-9]'; }; \
+then exec typescript-language-server --stdio; else exec tsc --lsp --stdio; fi\"";
+
+/// The command for `server` in a POSIX shell (WSL, Linux, macOS).
+fn unix_command(server: &str) -> Option<&'static str> {
+    if server == "typescript" { Some(TS_UNIX) } else { command(server) }
+}
+
 struct Server {
     child: Child,
     stdin: ChildStdin,
@@ -75,14 +88,39 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// Start `server` for the folder `root` (as the app stores it). Returns the id
 /// and the root as the server sees it, which the editor builds file URIs from.
+/// Where the global TypeScript lives (`npm root -g`/typescript/lib), for a
+/// project that has no `typescript` of its own. typescript-language-server,
+/// unlike VS Code, ships none and gives up; `tsserver.fallbackPath` points it
+/// here. Asked through the same shell that runs the server, so nvm's npm answers.
+fn global_ts(runtime: &str, shell: &Option<String>) -> Option<String> {
+    let out = if let Some(distro) = crate::wsl::distro_of(runtime) {
+        let sh = shell.clone().unwrap_or_else(|| "/bin/bash".into());
+        crate::util::quiet_command("wsl.exe").args(["-d", distro, "--exec", &sh, "-ic", "npm root -g"]).output()
+    } else if cfg!(windows) {
+        crate::util::quiet_command("cmd").args(["/C", "npm root -g"]).output()
+    } else {
+        let sh = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        crate::util::quiet_command(&sh).args(["-ic", "npm root -g"]).output()
+    };
+    // rc files may print first: the answer is the last line that is a path.
+    let text = String::from_utf8_lossy(&out.ok()?.stdout).into_owned();
+    let dir = text.lines().rev().map(str::trim).find(|l| l.starts_with('/') || l.contains(":\\"))?.to_string();
+    let sep = if dir.contains('\\') { "\\" } else { "/" };
+    Some(format!("{dir}{sep}typescript{sep}lib"))
+}
+
+/// Start `server`; returns its id, the root as the server sees it, and for
+/// TypeScript the global install to fall back on.
 pub fn start(app: &AppHandle, servers: &Servers, runtime: &str, shell: Option<String>, root: &str, server: &str)
-    -> Result<(u32, String), String> {
+    -> Result<(u32, String, Option<String>), String> {
+    let ts = if server == "typescript" { global_ts(runtime, &shell) } else { None };
     let cmd = command(server).ok_or_else(|| format!("No language server for {server}"))?;
+    let ucmd = unix_command(server).unwrap_or(cmd);
     let (mut c, seen_root) = if let Some(distro) = crate::wsl::distro_of(runtime) {
         let dir = crate::util::to_wsl_path(root);
         let shell = shell.unwrap_or_else(|| "/bin/bash".into());
         let mut c = crate::util::quiet_command("wsl.exe");
-        c.args(["-d", distro, "--cd", &dir, "--exec", &shell, "-ic", &format!("exec {cmd}")]);
+        c.args(["-d", distro, "--cd", &dir, "--exec", &shell, "-ic", &format!("exec {ucmd}")]);
         (c, dir)
     } else if cfg!(windows) {
         // npm installs these as .cmd shims, which only cmd.exe runs.
@@ -92,7 +130,7 @@ pub fn start(app: &AppHandle, servers: &Servers, runtime: &str, shell: Option<St
     } else {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
         let mut c = crate::util::quiet_command(&shell);
-        c.args(["-ic", &format!("exec {cmd}")]).current_dir(root);
+        c.args(["-ic", &format!("exec {ucmd}")]).current_dir(root);
         (c, root.to_string())
     };
     let mut child = c
@@ -119,7 +157,7 @@ pub fn start(app: &AppHandle, servers: &Servers, runtime: &str, shell: Option<St
         // `msg: None` tells the editor the server is gone (or never started).
         let _ = app.emit("lsp", Msg { id, msg: None });
     });
-    Ok((id, seen_root))
+    Ok((id, seen_root, ts))
 }
 
 pub fn send(servers: &Servers, id: u32, msg: &str) -> Result<(), String> {

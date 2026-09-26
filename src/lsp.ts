@@ -100,7 +100,7 @@ function connect(root: string, runtime: string, server: string): Promise<Conn | 
   let c = conns.get(key);
   if (!c) {
     c = (async () => {
-      const [id, seen] = await invoke<[number, string]>("lsp_start", { root, server, runtime });
+      const [id, seen, tsLib] = await invoke<[number, string, string | null]>("lsp_start", { root, server, runtime });
       const map = uriMap(root, seen);
       maps.add(map);
       const subs = new Set<(v: string) => void>();
@@ -119,6 +119,8 @@ function connect(root: string, runtime: string, server: string): Promise<Conn | 
         rootUri: map.base,
         extensions: languageServerExtensions(),
         timeout: 15000,
+        // A project without its own `typescript` uses the global one (see lsp.rs).
+        initializationOptions: tsLib ? { tsserver: { fallbackPath: tsLib } } : undefined,
         workspace: (cl) => new Space(cl, (uri) => { const p = map.toPath(uri); if (p) opener(p); return !!p; }),
       }).connect(transport);
       ids.set(key, id);
