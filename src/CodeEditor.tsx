@@ -105,6 +105,18 @@ export default function CodeEditor({ file, value, original, onChange, onSave, ro
           lang.current.of([]),
           lsp.current.of([]),
           peekZone(slot),
+          // Ctrl+Click (Cmd on a Mac) goes to the definition, as in VS Code.
+          EditorView.domEventHandlers({
+            mousedown: (e, v) => {
+              if (!(e.ctrlKey || e.metaKey) || e.button !== 0 || !LSPPlugin.get(v)) return false;
+              const pos = v.posAtCoords({ x: e.clientX, y: e.clientY });
+              if (pos == null) return false;
+              e.preventDefault();
+              v.dispatch({ selection: { anchor: pos } });
+              void acts.current.goDef();
+              return true;
+            },
+          }),
           // VS Code's keys. The LSP ones do nothing until a server is attached.
           keymap.of([
             indentWithTab, { key: "Mod-s", preventDefault: true, run: () => (cb.current.onSave(), true) },
@@ -197,6 +209,28 @@ export default function CodeEditor({ file, value, original, onChange, onSave, ro
     if (r.uri === p?.uri) go(v);
     else if (r.path) void p?.client.workspace.displayFile(r.uri).then((t) => t && go(t));
   };
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const f = (e: KeyboardEvent) => box.current?.classList.toggle("ctrl", smart && (e.ctrlKey || e.metaKey));
+    window.addEventListener("keydown", f);
+    window.addEventListener("keyup", f);
+    return () => { window.removeEventListener("keydown", f); window.removeEventListener("keyup", f); };
+  }, [smart]);
+  // The zone lives inside the editor's content, which is as wide as its longest
+  // line. Size it to what is on screen and pin it left of a sideways scroll.
+  useEffect(() => {
+    const v = view.current;
+    if (!peek || !v) return;
+    const fit = () => {
+      const g = v.dom.querySelector<HTMLElement>(".cm-gutters")?.offsetWidth ?? 0;
+      slot.style.left = `${g}px`;
+      slot.style.width = `${Math.max(320, v.scrollDOM.clientWidth - g - 4)}px`;
+    };
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(v.scrollDOM);
+    return () => ro.disconnect();
+  }, [!!peek]); // eslint-disable-line react-hooks/exhaustive-deps
   const acts = useRef({ goDef, refs: showRefs, closePeek });
   acts.current = { goDef, refs: showRefs, closePeek };
   const rel = (p: string) => p.slice(root.length).replace(/^[\\/]/, "");
@@ -222,7 +256,7 @@ export default function CodeEditor({ file, value, original, onChange, onSave, ro
   ];
 
   return (
-    <div className="code-ed" onContextMenu={(e) => {
+    <div className="code-ed" ref={box} onContextMenu={(e) => {
       const el = e.target as HTMLElement;
       if (!el.closest(".cm-content") || el.closest(".peek")) return;
       e.preventDefault();

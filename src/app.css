@@ -901,7 +901,9 @@ table.plain td.mono { font-family: var(--mono); }
 .diff-ed .cm-merge-revert button { color: #ccc; cursor: pointer; }
 
 /* Peek References: VS Code's peek zone, blue-edged, preview left, list right. */
-.peek-slot { display: block; }
+.peek-slot { display: block; position: sticky; }
+/* Ctrl held: Ctrl+Click goes to a definition, so the pointer says so. */
+.code-ed.ctrl .cm-content { cursor: pointer; }
 .peek { height: 290px; display: flex; flex-direction: column; margin: 2px 0; border-top: 2px solid #3794ff; border-bottom: 2px solid #3794ff;
         background: #1b2530; font-family: system-ui, sans-serif; font-size: 12.5px; color: #cccccc; white-space: normal; outline: none; cursor: default; }
 .peek-head { flex: none; display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px 0 12px; background: #1f2d3b; }
