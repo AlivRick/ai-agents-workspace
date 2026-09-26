@@ -1,6 +1,6 @@
 [package]
 name = "agentspace"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 rust-version = "1.77"
 
@@ -20,6 +20,7 @@ serde_json = "1"
 portable-pty = "0.9"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+tauri-plugin-opener = "2"
 
 # Windows toasts need an activation callback, which the notification plugin
 # does not expose on desktop. See src/notify.rs.

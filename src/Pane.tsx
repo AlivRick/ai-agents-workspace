@@ -3,10 +3,16 @@ import ScrollRuler from "./ScrollRuler";
 import { Terminal, type IMarker } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { SearchAddon } from "@xterm/addon-search";
 import { listen } from "@tauri-apps/api/event";
 import { api, shortPath } from "./api";
 import type { Palette } from "./themes";
+
+/** A link clicked in a terminal opens in the system browser. The webview has
+ *  no browser of its own (window.open does nothing in Tauri), and only http(s)
+ *  goes out: a program's output must not get to launch `file:` or app links. */
+const browse = (uri: string) => { if (/^https?:\/\//i.test(uri)) void openUrl(uri).catch(() => {}); };
 
 export type Block = { id: number; cmd: string; exit: number | null; at: number; cwd: string; marker: IMarker | undefined };
 
@@ -44,12 +50,14 @@ export default function Pane({
       fontFamily: 'ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace',
       fontSize: 12.5, lineHeight: 1.25, theme: palette, cursorBlink: true,
       scrollback: 12000, allowProposedApi: true, macOptionIsMeta: true,
+      // OSC 8 links (Claude Code prints its links this way) — see `browse`.
+      linkHandler: { activate: (_e, uri) => browse(uri) },
     });
     const fit = new FitAddon();
     const finder = new SearchAddon();
     term.loadAddon(fit);
     term.loadAddon(finder);
-    term.loadAddon(new WebLinksAddon());
+    term.loadAddon(new WebLinksAddon((_e, uri) => browse(uri)));
     term.open(host.current!);
     setViewport(host.current!.querySelector<HTMLElement>(".xterm-viewport"));
     fit.fit();

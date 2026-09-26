@@ -16,6 +16,8 @@ gh release view "v$V" -R "$REPO" >/dev/null 2>&1 && { echo "v$V da phat hanh roi
 
 TMP=$(mktemp -d)
 cp "$PORTABLE" "$TMP/Agentspace-portable-x64.exe"
+# Ten co dinh, de trang gioi thieu tro vao releases/latest/download/... ma khong phai sua theo version.
+cp "$SETUP" "$TMP/Agentspace-setup-x64.exe"
 # URL tai day la ten file tren release; GitHub doi dau cach thanh dau cham nen ten khong co dau cach.
 V="$V" NOTES="$NOTES" SIG="$(cat "$SETUP.sig")" URL="https://github.com/$REPO/releases/download/v$V/$(basename "$SETUP")" node -e '
   const e = process.env;
@@ -24,6 +26,6 @@ V="$V" NOTES="$NOTES" SIG="$(cat "$SETUP.sig")" URL="https://github.com/$REPO/re
 ' > "$TMP/latest.json"
 
 gh release create "v$V" -R "$REPO" --title "Agentspace $V" --notes "$NOTES" \
-  "$SETUP" "$TMP/Agentspace-portable-x64.exe" "$TMP/latest.json"
+  "$SETUP" "$TMP/Agentspace-setup-x64.exe" "$TMP/Agentspace-portable-x64.exe" "$TMP/latest.json"
 rm -rf "$TMP"
 echo "da phat hanh v$V"
