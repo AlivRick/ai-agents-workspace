@@ -40,6 +40,15 @@ const Chev = ({ open }: { open: boolean }) => (
   </svg>
 );
 const lspWarned = new Set<string>();
+/** Each project's tabs, the one on screen, and unsaved edits — kept while the
+ *  app runs, so switching project or view and coming back finds them as left. */
+type Kept = { tabs: Tab[]; active: string; stash: Record<string, { text: string; saved: string }> };
+const kept = new Map<string, Kept>();
+/** The tabs (not the edits) also go to localStorage, for the next launch. */
+const tabsKey = (root: string) => "tabs:" + root;
+const loadTabs = (root: string): Kept | null => {
+  try { const v = JSON.parse(localStorage.getItem(tabsKey(root)) ?? "null"); return v?.tabs ? { ...v, stash: {} } : null; } catch { return null; }
+};
 const isMd = (p: string) => /\.(md|markdown|mdx)$/i.test(p);
 const base = (p: string) => p.split(/[\\/]/).pop() ?? p;
 const parent = (p: string) => p.slice(0, Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")));
@@ -113,14 +122,34 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
     return { a: a ?? "", b: o.staged ? b ?? "" : null };
   };
 
+  // Coming to a project: its tabs as they were left. Leaving it (another
+  // project, another view): remember them, the open file's edits included.
+  const keep = useRef({ tabs, open, mode, dirty, text, saved });
+  keep.current = { tabs, open, mode, dirty, text, saved };
   useEffect(() => {
     stopOthers(root);
     setKids({});
-    setOpen(null);
-    setTabs([]);
-    stash.current = {};
+    const k = (root && (kept.get(root) ?? loadTabs(root))) || null;
+    stash.current = { ...(k?.stash ?? {}) };
+    setTabs(k?.tabs ?? []);
+    const act = k?.tabs.find((t) => tkey(t) === k.active);
+    setOpen(act ?? null);
+    if (act) setMode(act.mode);
     if (root) api.fsList(root, root).then((e) => setKids({ [root]: e })).catch((e) => setError(String(e)));
+    return () => {
+      if (!root) return;
+      const c = keep.current;
+      const edits = { ...stash.current };
+      if (c.open && c.dirty) edits[tkey(c.open)] = { text: c.text, saved: c.saved };
+      const ts = c.tabs.map((t) => (c.open && tkey(t) === tkey(c.open) ? { ...t, mode: c.mode } : t));
+      kept.set(root, { tabs: ts, active: c.open ? tkey(c.open) : "", stash: edits });
+    };
   }, [root]);
+  useEffect(() => {
+    if (!root) return;
+    const active = open ? tkey(open) : "";
+    try { localStorage.setItem(tabsKey(root), JSON.stringify({ tabs: tabs.map((t) => (open && tkey(t) === active ? { ...t, mode } : t)), active })); } catch { /* private mode */ }
+  }, [root, tabs, open, mode]);
 
   // VS Code watches files and re-runs `git status` on change. A Windows app
   // reading a distro over \\wsl.localhost gets no reliable change events, so
