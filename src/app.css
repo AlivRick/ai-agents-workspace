@@ -904,7 +904,7 @@ table.plain td.mono { font-family: var(--mono); }
 .peek-slot { display: block; position: sticky; }
 /* Ctrl held: Ctrl+Click goes to a definition, so the pointer says so. */
 .code-ed.ctrl .cm-content { cursor: pointer; }
-.peek { height: 290px; display: flex; flex-direction: column; margin: 2px 0; border-top: 2px solid #3794ff; border-bottom: 2px solid #3794ff;
+.peek { height: 290px; overflow: hidden; display: flex; flex-direction: column; margin: 2px 0; border-top: 2px solid #3794ff; border-bottom: 2px solid #3794ff;
         background: #1b2530; font-family: system-ui, sans-serif; font-size: 12.5px; color: #cccccc; white-space: normal; outline: none; cursor: default; }
 .peek-head { flex: none; display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px 0 12px; background: #1f2d3b; }
 .peek-head .d { color: #9aa5b1; }
@@ -912,11 +912,13 @@ table.plain td.mono { font-family: var(--mono); }
 .peek-head button { color: #ccc; font-size: 16px; width: 22px; height: 22px; border-radius: 4px; }
 .peek-head button:hover { background: rgba(255, 255, 255, .1); }
 .peek-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 32%); }
-.peek-prev { min-width: 0; min-height: 0; display: flex; background: #001f33; }
-.peek-prev .cm-editor { flex: 1; height: 100%; background: #001f33; }
+/* min-width: 0 all the way down: a flex item is otherwise as wide as its
+   longest line, and the preview spilled over the list beside it. */
+.peek-prev { min-width: 0; min-height: 0; display: flex; overflow: hidden; background: #001f33; }
+.peek-prev .cm-editor { flex: 1; min-width: 0; height: 100%; background: #001f33; }
 .peek-prev .cm-gutters { background: #001f33; }
 .peek-prev .hint { padding: 12px; color: #9aa5b1; }
-.peek-list { overflow: auto; background: #252526; border-left: 1px solid #3794ff55; padding: 2px 0; }
+.peek-list { min-width: 0; position: relative; overflow: auto; background: #252526; border-left: 1px solid #3794ff55; padding: 2px 0; }
 .peek-list .pg { display: flex; align-items: center; gap: 6px; padding: 3px 8px; cursor: pointer; white-space: nowrap; }
 .peek-list .pg:hover, .peek-list .pr:hover { background: #2a2d2e; }
 .peek-list .pg .chev { width: 12px; display: inline-block; transition: transform .1s; }
