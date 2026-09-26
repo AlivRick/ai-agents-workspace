@@ -1,6 +1,7 @@
 mod codex;
 mod engine;
 mod explorer;
+mod lsp;
 mod notify;
 mod sessions;
 mod store;
@@ -635,6 +636,27 @@ async fn fs_write(root: String, path: String, content: String) -> Result<(), Str
     blocking(move || explorer::write(&root, &path, &content)).await?
 }
 
+/// Start a language server for the Explorer's editor. See `lsp.rs`.
+#[tauri::command]
+async fn lsp_start(
+    app: State<'_, App>, handle: tauri::AppHandle, servers: State<'_, lsp::Servers>,
+    root: String, server: String, runtime: Option<String>,
+) -> Result<(u32, String), String> {
+    let r = rt(runtime);
+    let shell = wsl::distro_of(&r).and_then(|_| app.runtimes_cached().into_iter().find(|x| x.id == r).map(|x| x.shell));
+    lsp::start(&handle, &servers, &r, shell, &root, &server)
+}
+
+#[tauri::command]
+fn lsp_send(servers: State<'_, lsp::Servers>, id: u32, msg: String) -> Result<(), String> {
+    lsp::send(&servers, id, &msg)
+}
+
+#[tauri::command]
+fn lsp_stop(servers: State<'_, lsp::Servers>, id: u32) {
+    lsp::stop(&servers, id)
+}
+
 /// The Explorer's right-click menu. `op`: "file", "folder", "rename",
 /// "delete", "copy" (into folder `to`) or "reveal". Returns the new path.
 #[tauri::command]
@@ -774,6 +796,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
+        .manage(lsp::Servers::default())
         .manage(term::Terminals::default())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
@@ -823,6 +846,9 @@ pub fn run() {
             fs_read,
             fs_write,
             fs_op,
+            lsp_start,
+            lsp_send,
+            lsp_stop,
             scm_status,
             scm_diff,
             scm_stage,

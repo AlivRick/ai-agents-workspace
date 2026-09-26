@@ -3,6 +3,7 @@ import { Marked } from "marked";
 import { api, shortPath, type Entry, type ScmItem, type ScmStatus } from "./api";
 import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import CodeEditor from "./CodeEditor";
+import { setOpener, stopOthers } from "./lsp";
 import { Menu, Picker, type Item, type Pick, type PickerAsk } from "./ScmMenu";
 import DiffEditor from "./DiffEditor";
 import { allFiles, buildTree, type Folder } from "./scmtree";
@@ -38,6 +39,7 @@ const Chev = ({ open }: { open: boolean }) => (
     <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
   </svg>
 );
+const lspWarned = new Set<string>();
 const isMd = (p: string) => /\.(md|markdown|mdx)$/i.test(p);
 const base = (p: string) => p.split(/[\\/]/).pop() ?? p;
 const parent = (p: string) => p.slice(0, Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")));
@@ -112,6 +114,7 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
   };
 
   useEffect(() => {
+    stopOthers(root);
     setKids({});
     setOpen(null);
     setTabs([]);
@@ -271,6 +274,8 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
     return { abs: p, rel: i?.path, staged: !!i && !scm?.changes.includes(i), status: i?.status };
   };
   const fromTree = (e: Entry) => go(asOpen(e.path), isMd(e.path) ? "preview" : "edit");
+  // Go to Definition in another file opens it here, as a tab in Edit mode.
+  setOpener((abs) => go(asOpen(abs), "edit"));
   /** Files dropped on the editor: a tab each, the last one on screen. */
   const openMany = (paths: string[]) => {
     const news = paths.map((p) => ({ ...asOpen(p), mode: (isMd(p) ? "preview" : "edit") as Mode }));
@@ -615,6 +620,8 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
       run(async () => { await api.fsOp(root, "copy", clip.path, dir); reload(dir); });
     }
   };
+  /** A missing language server is said once per session, not per file. */
+  const lspFail = (why: string) => { if (!lspWarned.has(why)) { lspWarned.add(why); setError(why); } };
   const copyText = (t: string) => void navigator.clipboard.writeText(t).catch((x) => setError(String(x)));
   /** Open the folders down to `p` in the tree, select it and scroll to it. */
   const revealInTree = async (p: string) => {
@@ -952,7 +959,8 @@ export default function FilesView({ root, name, runtime, terminals, docked, onDo
               )}
               {mode !== "diff" && readErr && <div className="hint">{readErr}</div>}
               {mode === "edit" && canEdit && (
-                <CodeEditor key={open.abs} file={open.abs} value={text} original={orig} onChange={setText} onSave={save} />
+                <CodeEditor key={open.abs} file={open.abs} value={text} original={orig} onChange={setText} onSave={save}
+                            root={root} runtime={runtime} onLspFail={lspFail} />
               )}
               {/* Links would navigate the whole app away from itself. */}
               {mode === "preview" && canEdit && (

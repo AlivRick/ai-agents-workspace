@@ -1,7 +1,7 @@
 {
   "name": "agentspace",
   "private": true,
-  "version": "0.1.8",
+  "version": "0.1.9",
   "type": "module",
   "scripts": {
     "dev": "node scripts/icons.mjs && vite",
@@ -21,12 +21,14 @@
     "check:scmtree": "node --experimental-strip-types src/scmtree.check.ts",
     "icons": "node scripts/icons.mjs",
     "check:icons": "node --experimental-strip-types src/icons.check.ts",
-    "check:gutter": "node --experimental-strip-types src/gutter.check.ts"
+    "check:gutter": "node --experimental-strip-types src/gutter.check.ts",
+    "check:lspuri": "node --experimental-strip-types src/lspuri.check.ts"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",
     "@codemirror/language": "^6.12.4",
     "@codemirror/language-data": "^6.5.2",
+    "@codemirror/lsp-client": "^6.3.0",
     "@codemirror/merge": "^6.12.2",
     "@codemirror/state": "^6.7.6",
     "@codemirror/view": "^6.43.13",
